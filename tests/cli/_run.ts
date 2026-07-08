@@ -9,6 +9,7 @@ import { join } from "path";
 
 const REPO_ROOT = new URL("../../", import.meta.url).pathname.replace(/\/$/, "");
 const CLI_ENTRY = join(REPO_ROOT, "cli/src/cli.ts");
+const DEFAULT_CLI_TIMEOUT_MS = 20_000;
 
 export interface RunResult {
   stdout: string;
@@ -19,20 +20,46 @@ export interface RunResult {
 export async function runCli(
   args: string[],
   env: Record<string, string> = {},
-  options: { cwd?: string } = {},
+  options: { cwd?: string; timeoutMs?: number } = {},
 ): Promise<RunResult> {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_CLI_TIMEOUT_MS;
   const proc = Bun.spawn(["bun", "run", CLI_ENTRY, ...args], {
     stdout: "pipe",
     stderr: "pipe",
     cwd: options.cwd,
     env: { ...process.env, ...env },
   });
-  const [stdout, stderr] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-  ]);
-  const code = await proc.exited;
-  return { stdout, stderr, code };
+
+  const stdoutPromise = new Response(proc.stdout).text();
+  const stderrPromise = new Response(proc.stderr).text();
+  const exitPromise = proc.exited;
+  const timeoutError = new Error(`runCli timed out after ${timeoutMs}ms`);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(timeoutError), timeoutMs);
+  });
+  const collectResult = Promise.all([stdoutPromise, stderrPromise, exitPromise]).then((
+    [stdout, stderr, code],
+  ) => ({ stdout, stderr, code }));
+
+  try {
+    return await Promise.race([collectResult, timeoutPromise]);
+  } catch (error) {
+    if (error === timeoutError) {
+      proc.kill();
+      const [stdout, stderr] = await Promise.allSettled([stdoutPromise, stderrPromise]);
+      return {
+        stdout: stdout.status === "fulfilled" ? stdout.value : "",
+        stderr: `${stderr.status === "fulfilled" ? stderr.value : ""} [runCli timeout after ${timeoutMs}ms]`,
+        code: 143,
+      };
+    }
+    throw error;
+  } finally {
+    if (timer) clearTimeout(timer);
+    proc.kill();
+    await proc.exited.catch(() => undefined);
+  }
 }
 
 export function tryParseJson(s: string): unknown | null {
