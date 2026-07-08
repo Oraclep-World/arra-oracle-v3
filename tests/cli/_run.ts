@@ -10,6 +10,16 @@ import { join } from "path";
 const REPO_ROOT = new URL("../../", import.meta.url).pathname.replace(/\/$/, "");
 const CLI_ENTRY = join(REPO_ROOT, "cli/src/cli.ts");
 const DEFAULT_CLI_TIMEOUT_MS = 20_000;
+const KILL_GRACE_MS = 250;
+
+function safeKillTree(pid: number | undefined, signal: NodeJS.Signals): void {
+  if (!pid || process.platform === "win32") return;
+  try {
+    process.kill(-pid, signal);
+  } catch {
+    // ignore: fallback to direct child kill only
+  }
+}
 
 export interface RunResult {
   stdout: string;
@@ -46,7 +56,11 @@ export async function runCli(
     return await Promise.race([collectResult, timeoutPromise]);
   } catch (error) {
     if (error === timeoutError) {
-      proc.kill();
+      safeKillTree(proc.pid, "SIGTERM");
+      proc.kill("SIGTERM");
+      await Promise.race([proc.exited, new Promise<void>((resolve) => setTimeout(resolve, KILL_GRACE_MS))]).catch(() => undefined);
+      safeKillTree(proc.pid, "SIGKILL");
+      proc.kill("SIGKILL");
       const [stdout, stderr] = await Promise.allSettled([stdoutPromise, stderrPromise]);
       return {
         stdout: stdout.status === "fulfilled" ? stdout.value : "",
@@ -57,6 +71,7 @@ export async function runCli(
     throw error;
   } finally {
     if (timer) clearTimeout(timer);
+    safeKillTree(proc.pid, "SIGTERM");
     proc.kill();
     await proc.exited.catch(() => undefined);
   }
