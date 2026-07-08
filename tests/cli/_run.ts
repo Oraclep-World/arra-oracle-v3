@@ -48,9 +48,11 @@ export async function runCli(
   const timeoutPromise = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(timeoutError), timeoutMs);
   });
-  const collectResult = Promise.all([stdoutPromise, stderrPromise, exitPromise]).then((
-    [stdout, stderr, code],
-  ) => ({ stdout, stderr, code }));
+  const collectResult = Promise.all([stdoutPromise, stderrPromise, exitPromise]).then(([
+    stdout,
+    stderr,
+    code,
+  ]) => ({ stdout, stderr, code }));
 
   try {
     return await Promise.race([collectResult, timeoutPromise]);
