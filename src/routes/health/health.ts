@@ -4,7 +4,7 @@ import { MCP_SERVER_NAME } from '../../const.ts';
 import { sqlite } from '../../db/index.ts';
 import { scanPlugins } from '../plugins/model.ts';
 import { readVectorBackendHealth } from '../../vector/health.ts';
-import { getEmbedderRuntimeStatus } from '../../vector/embedder-config.ts';
+import { getEmbedderRuntimeStatus, readEmbedderRuntimeStatus, resolveEmbeddingProviderSelection, type EmbedderRuntimeStatus } from '../../vector/embedder-config.ts';
 import { getVectorRuntimeStatus, type VectorRuntimeStatus } from '../../vector/runtime-status.ts';
 import { readVectorServerHealth, type VectorServerHealth } from './vector-server.ts';
 import { memoryConfidenceRerankConfig } from '../memory/rerank-config.ts';
@@ -42,6 +42,7 @@ export interface HealthEndpointOptions {
   pluginStatuses?: () => UnifiedPluginStatus[] | Promise<UnifiedPluginStatus[]>;
   embeddingProviders?: EmbeddingProviderProbe;
   embeddingProviderSelection?: EmbeddingProviderSelection;
+  embedderRuntime?: () => Promise<EmbedderRuntimeStatus>;
   vectorRuntime?: () => VectorRuntimeStatus;
   dbPing?: DbPing;
   diskPath?: string;
@@ -91,6 +92,19 @@ function vectorAvailable(runtime: ReturnType<typeof getVectorRuntimeStatus>, vec
   return vector.status !== 'down';
 }
 
+async function readHealthEmbedderStatus(options: HealthEndpointOptions): Promise<EmbedderRuntimeStatus> {
+  if (options.embedderRuntime) return options.embedderRuntime();
+  if (options.embeddingProviders || options.embeddingProviderSelection) return injectedEmbedderStatus(options);
+  return readEmbedderRuntimeStatus();
+}
+
+function injectedEmbedderStatus(options: HealthEndpointOptions): EmbedderRuntimeStatus {
+  const selection = options.embeddingProviderSelection ?? resolveEmbeddingProviderSelection();
+  const runtime = getEmbedderRuntimeStatus();
+  if (runtime.status !== 'unknown' && runtime.provider === selection.provider && !runtime.reason?.includes('FTS5-only')) return runtime;
+  return { status: 'unknown', ...selection };
+}
+
 async function readSafeVectorServerHealth(read = readVectorServerHealth): Promise<VectorServerHealth> {
   try { return await read(); }
   catch (error) { return { configured: true, status: 'down', error: errorMessage(error) }; }
@@ -124,14 +138,15 @@ export function createHealthEndpoint(options: HealthEndpointOptions = {}) {
     const vectorRuntime = options.vectorRuntime?.() ?? (options.vectorHealth
       ? { vectorMode: 'embedded' as const }
       : getVectorRuntimeStatus());
-    const embedderStatus = getEmbedderRuntimeStatus();
+    const embedderStatus = await readHealthEmbedderStatus(options);
     const serviceUptime = Math.round(uptimeSeconds * 1000) / 1000;
     const vectorIsAvailable = embedderStatus.status === 'degraded' ? false : vectorAvailable(vectorRuntime, vector, vectorServer);
+    const vectorStatus = vector.status === 'down' ? 'down' : embedderStatus.status === 'degraded' ? 'degraded' : vector.status;
     const entityCoverage = options.entityCoverage?.() ?? readEntityCoverageStats();
     const subsystems = await buildHealthSubsystems({
       dbStatus, vector, vectorServer, vectorRuntime, pluginStatus, pluginCount,
       toolCount, uptimeSeconds: serviceUptime, embeddingProviders: options.embeddingProviders,
-      embeddingProviderSelection: options.embeddingProviderSelection, entityCoverage,
+      embeddingProviderSelection: options.embeddingProviderSelection, embedderStatus, entityCoverage,
     });
     const healthStatus = rollupHealthStatus(subsystems);
 
@@ -147,7 +162,7 @@ export function createHealthEndpoint(options: HealthEndpointOptions = {}) {
       db: dbStatus.status,
       oracle: dbStatus.status === 'connected' ? 'connected' : 'degraded',
       dbStatus: dbStatus.status,
-      vectorStatus: embedderStatus.status === 'degraded' ? 'degraded' : vector.status,
+      vectorStatus,
       embedderStatus,
       ...(embedderStatus.reason ? { vectorReason: embedderStatus.reason } : {}),
       ...vectorRuntime,
