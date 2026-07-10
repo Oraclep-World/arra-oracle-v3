@@ -245,6 +245,6 @@ export const traceLog = sqliteTable('trace_log', {
   index('idx_trace_next').on(table.nextTraceId),
   index('idx_trace_created').on(table.createdAt),
 ]);
-export { exportJobs } from './export-schema.ts';
+export { exportJobs } from './export-schema.ts'; export { fleetIngestCursor, fleetMessages } from './fleet-log-schema.ts';
 export { activityLog, menuItems, schedule, settings, supersedeLog } from './logistics-schema.ts';
 export { assertSqliteIdentifier, oracleVectorDocuments, sqliteVecEmbeddingsTable, sqliteVecMetadataTable, vectorDocumentsTable } from './vector-schema.ts';
