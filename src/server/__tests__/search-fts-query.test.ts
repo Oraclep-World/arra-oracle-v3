@@ -35,6 +35,7 @@ insertDoc('punctuation', 'Muninn recalls foo bar baz from punctuation-heavy note
 insertDoc('alpha-only', 'Issue one three one four alphaonly recall lives here.', ['alphaonly1314']);
 insertDoc('beta-only', 'Issue one three one four betaonly memory lives here.', ['betaonly1314']);
 insertDoc('alpha-beta', 'Issue one three one four alphaonly and betaonly both appear here.', ['alphaonly1314', 'betaonly1314']);
+insertDoc('access-project-2761', 'Document access project accessproject2761 recall.', ['accessproject2761']);
 
 describe('FTS query sanitation and recall behavior', () => {
   test('builds quoted OR terms instead of raw punctuation syntax', () => {
@@ -54,6 +55,20 @@ describe('FTS query sanitation and recall behavior', () => {
     expect(ids).toContain('alpha-only');
     expect(ids).toContain('beta-only');
     expect(ids).toContain('alpha-beta');
+  });
+
+  test('records request project on document access rows after search', async () => {
+    const project = 'github.com/acme/widget';
+    const result = await handleSearch('accessproject2761', 'all', 10, 0, 'fts', project);
+    expect(result.results.map((r) => r.id)).toContain('access-project-2761');
+
+    const row = sqlite.prepare(`
+      SELECT project FROM document_access
+      WHERE document_id = ? AND access_type = 'search'
+      ORDER BY id DESC LIMIT 1
+    `).get('access-project-2761') as { project: string | null } | null;
+
+    expect(row?.project).toBe(project);
   });
 });
 
