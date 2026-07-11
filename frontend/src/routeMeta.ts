@@ -106,6 +106,7 @@ export function routeMeta(pathname: string, search = ''): RouteMeta {
   if (pathname === '/ask') return base('Studio Ask', 'Ask', 'Cited RAG answers from /api/v1/ask.', [{ label: 'Studio Ask' }]);
   if (pathname === '/export') return base('Export app', 'Export', 'Connect to an old Oracle v2 backend and download JSON, CSV, or Markdown backups.', [{ label: 'Export app' }]);
   if (pathname === '/feed') return base('Document feed', 'Feed', 'DB-backed document feed from /api/list, independent of vector collections.', [{ label: 'Feed' }]);
+  if (pathname === '/fleet-log') return base('Fleet log console', 'Fleet Log', 'Search mocked fleet_messages rows before the live fleet-log endpoint lands.', [{ label: 'Fleet Log' }]);
   if (pathname === '/forum') return base('Forum threads', 'Forum', 'Operational thread list from /api/threads.', [{ label: 'Forum' }]);
   if (pathname === '/activity' || pathname === '/traces') return base('Trace activity', 'Activity', 'Recent trace activity from /api/traces.', [{ label: 'Activity / Traces' }]);
   if (pathname === '/learn') return base('Learn entries', 'Learn', 'Capture and edit Oracle learnings.', [{ label: 'Learn' }]);

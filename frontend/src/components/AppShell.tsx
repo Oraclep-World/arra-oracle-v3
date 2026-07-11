@@ -65,6 +65,7 @@ export function AppShell({
     { to: '/ask', label: 'Ask', description: 'Cited RAG answers from /api/v1/ask' },
     { to: '/export', label: 'Export App', description: 'Legacy v2 JSON/Markdown backups' },
     { to: '/feed', label: 'Feed', description: 'DB-backed document feed from /api/list' },
+    { to: '/fleet-log', label: 'Fleet Log', description: 'Mocked reconcile console for fleet messages' },
     { to: '/forum', label: 'Forum', description: 'Operational threads from /api/threads' },
     { to: '/traces', label: 'Activity', description: 'Trace activity from /api/traces' },
     { to: '/vector', label: 'Vector Dashboard', description: 'Collection health and indexing', end: true },
