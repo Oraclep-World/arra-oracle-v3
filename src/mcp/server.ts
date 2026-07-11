@@ -21,9 +21,8 @@ import { pluginMcpToolsFrom } from './plugin-tools.ts';
 import { runWithTenant } from '../middleware/tenant.ts';
 import { stripMcpTenantArgs, tenantIdFromMcpArgs } from './tenant.ts';
 import { createMcpPluginRuntime, type McpPluginRuntime } from './plugin-runtime.ts';
-
+import { createFtsOnlyVectorStore } from './fts-only-vector-store.ts';
 export type { OracleMCPServerOptions } from './server-options.ts';
-
 function errorResponse(text: string): ToolResponse { return { content: [{ type: 'text', text }], isError: true }; }
 export class OracleMCPServer {
   private server: Server;
@@ -32,7 +31,7 @@ export class OracleMCPServer {
   private repoRoot = REPO_ROOT;
   private vectorStore: VectorStoreAdapter | null = null;
   private vectorStatus: ToolContext['vectorStatus'] = 'unknown';
-  private vectorReason: string | undefined; private embedderProvider: string | undefined;
+  private vectorReason: string | undefined; private embedderProvider: string | undefined; private lastEmbedderWarning: string | undefined;
   private readOnly: boolean;
   private version = pkg.version;
   private disabledTools = new Set<string>();
@@ -46,7 +45,6 @@ export class OracleMCPServer {
   private readonly embeddedDeps?: EmbeddedDeps | Promise<EmbeddedDeps>;
   private readonly watchToolGroups: typeof watchToolGroupConfig;
   private readonly toolAllowlist: ReadonlySet<string> | null;
-
   constructor(options: OracleMCPServerOptions = {}) {
     this.readOnly = options.readOnly ?? false;
     this.embeddedDeps = options.embeddedDeps;
@@ -57,13 +55,11 @@ export class OracleMCPServer {
     console.error(this.oracleApiBase
       ? `[Oracle] Running in HTTP-proxy mode (ORACLE_HTTP_URL → ${this.oracleApiBase})`
       : '[Oracle] Running in embedded mode (ORACLE_HTTP_URL unset)');
-
     const groupConfig = options.toolGroups ?? loadToolGroupConfig(this.repoRoot);
     this.applyToolGroupConfig(groupConfig);
     this.logToolGroupConfig(groupConfig);
     this.unifiedRuntime = createMcpPluginRuntime({ runtime: options.unifiedRuntime, runtimeRef: options.unifiedRuntimeRef, watch: options.watchPlugins, warn: (message) => console.error(message) });
     this.watchToolGroupsIfNeeded(options.toolGroups);
-
     this.server = new Server(
       { name: MCP_SERVER_NAME, version: this.version },
       { capabilities: { tools: {} } },
@@ -72,7 +68,6 @@ export class OracleMCPServer {
     this.setupHandlers();
     this.setupErrorHandling(options.installSignalHandlers !== false);
   }
-
   private applyToolGroupConfig(config: ToolGroupConfig): void {
     this.disabledTools = getDisabledTools(config);
     this.enabledToolNames = getEnabledToolNames(config);
@@ -109,11 +104,15 @@ export class OracleMCPServer {
     const { createVectorStoreForModel, getEmbeddingModels, createDatabase, probeEmbedder = probeConfiguredEmbedder } = await this.loadEmbeddedDeps();
     const models = getEmbeddingModels();
     const preset = models['bge-m3'] ?? Object.values(models)[0];
-    this.vectorStore = createVectorStoreForModel(preset);
+    const embedderStatus = await probeEmbedder(preset);
+    this.applyEmbedderStatus(embedderStatus);
+    try { this.vectorStore = createVectorStoreForModel(preset); } catch (error) {
+      if (embedderStatus.status !== 'degraded') throw error;
+      this.vectorStore = createFtsOnlyVectorStore(embedderStatus.reason ?? 'embedder unavailable');
+    }
     const { sqlite, db } = createDatabase(DB_PATH);
     this.sqlite = sqlite;
     this.db = db;
-    this.applyEmbedderStatus(await probeEmbedder(preset));
     await this.verifyVectorHealth();
   }
 
@@ -129,11 +128,12 @@ export class OracleMCPServer {
   private applyEmbedderStatus(status: EmbedderRuntimeStatus): void {
     setEmbedderRuntimeStatus(status);
     this.embedderProvider = status.provider;
-    if (status.status === 'connected') { this.vectorStatus = 'connected'; this.vectorReason = undefined; return; }
+    if (status.status === 'connected') { this.vectorStatus = 'connected'; this.vectorReason = undefined; this.lastEmbedderWarning = undefined; return; }
     if (status.status !== 'degraded') return;
     this.vectorStatus = 'degraded';
     this.vectorReason = status.reason;
-    console.error(formatEmbedderDegradedWarning(status.provider, status.reason ?? 'unknown'));
+    const warning = formatEmbedderDegradedWarning(status.provider, status.reason ?? 'unknown');
+    if (this.lastEmbedderWarning !== warning) { console.error(warning); this.lastEmbedderWarning = warning; }
   }
 
   private async verifyVectorHealth(): Promise<void> {
