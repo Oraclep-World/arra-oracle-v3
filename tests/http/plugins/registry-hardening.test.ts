@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Elysia } from 'elysia';
 
+import { createApiVersionedFetch } from '../../../src/middleware/api-version.ts';
+import { createUnifiedRuntimeRef } from '../../../src/plugins/runtime-routes.ts';
 import { loadUnifiedPlugins } from '../../../src/plugins/unified-loader.ts';
 import { createPluginsRouter } from '../../../src/routes/plugins/index.ts';
 import { pluginDir } from '../../plugins/_fixtures.ts';
@@ -21,8 +23,10 @@ function tempRoot(prefix: string): string {
   return root;
 }
 
-async function pluginsBody(app: Elysia) {
-  const res = await app.handle(new Request('http://local/api/plugins'));
+async function pluginsBody(app: Elysia, path = '/api/plugins') {
+  const handle = (request: Request) => app.handle(request);
+  const fetch = path.startsWith('/api/v1') ? createApiVersionedFetch(handle) : handle;
+  const res = await fetch(new Request(`http://local${path}`));
   expect(res.status).toBe(200);
   return await res.json() as { count: number; plugins: Array<Record<string, any>>; dir: string };
 }
@@ -63,6 +67,41 @@ describe('GET /api/plugins registry hardening', () => {
     });
     expect(plugin.mcpTools.map((tool: Record<string, unknown>) => tool.name)).not.toContain('oracle_surface_disabled');
     expect(plugin.mcpTools[0]).not.toHaveProperty('handler');
+  });
+
+  test('populates MCP tools from the live runtime registry', async () => {
+    const root = tempRoot('arra-plugin-runtime-tools-');
+    const modified = new Date().toISOString();
+    const runtimeRef = createUnifiedRuntimeRef({
+      mcpTools: [{ name: 'oracle_runtime_tool', description: 'runtime tool', inputSchema: {}, handler: 'tool', plugin: 'runtime-pack' }],
+      reload: async () => {},
+    });
+    const app = new Elysia().use(createPluginsRouter({
+      dir: root,
+      runtimeRef,
+      registry: () => [{
+        name: 'runtime-pack', version: '1.0.0', status: 'ok', surfaces: ['mcpTools'],
+        enabled: true, mcpTools: [], apiRoutes: [], proxy: [], cliSubcommands: [],
+        exportFormats: [], file: '', size: 0, modified,
+      } as any],
+    }));
+
+    let body = await pluginsBody(app, '/api/v1/plugins');
+    expect(body.plugins[0].mcpTools).toEqual([{
+      name: 'oracle_runtime_tool', description: 'runtime tool', inputSchema: {},
+      source: 'plugin', plugin: 'runtime-pack',
+    }]);
+
+    runtimeRef.current = {
+      mcpTools: [{ name: 'oracle_runtime_after_reload', description: 'after', inputSchema: {}, handler: 'tool', plugin: 'runtime-pack' }],
+      reload: async () => {},
+    };
+    body = await pluginsBody(app);
+    expect(body.plugins[0].mcpTools.map((tool: Record<string, unknown>) => tool.name)).toEqual(['oracle_runtime_after_reload']);
+
+    runtimeRef.current = { mcpTools: [], reload: async () => {} };
+    body = await pluginsBody(app);
+    expect(body.plugins[0].mcpTools).toEqual([]);
   });
 
   test('returns an empty registered-plugin listing without scanning fallbacks', async () => {

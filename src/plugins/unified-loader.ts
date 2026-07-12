@@ -191,7 +191,7 @@ function runtimeFrom(initialPlugins: LoadedUnifiedPlugin[], options: UnifiedLoad
   };
   const pluginStatuses = () => plugins.map((plugin) => pluginStatus.get(plugin.manifest.name)
     ?? { name: plugin.manifest.name, status: 'ok' as const });
-  const pluginRegistry = () => pluginRegistryFromLoadedPlugins(plugins, pluginStatuses());
+  const pluginRegistry = () => pluginRegistryFromLoadedPlugins(plugins, pluginStatuses(), mcpTools);
   const rebuild = (next: LoadedUnifiedPlugin[]) => {
     plugins = next; mcpInvokers.clear(); pluginStatus.clear(); initialized.clear();
     replaceAll(routes, []); replaceAll(mcpTools, []); replaceAll(menu, []); replaceAll(cliSubcommands, []); replaceAll(servers, []);
