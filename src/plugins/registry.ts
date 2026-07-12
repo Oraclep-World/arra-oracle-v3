@@ -10,7 +10,8 @@ import {
 import type { LoadedUnifiedPlugin, UnifiedPluginStatus } from './unified-loader.ts';
 
 type PluginManifest = LoadedUnifiedPlugin['manifest'];
-type PublicMcpTool = Omit<PluginManifest['mcpTools'][number], 'handler'> & { source: 'plugin'; plugin: string };
+export type RegisteredMcpTool = PluginManifest['mcpTools'][number] & { plugin?: string };
+export type PublicMcpTool = Omit<PluginManifest['mcpTools'][number], 'handler'> & { source: 'plugin'; plugin: string };
 type PublicApiRoute = Omit<PluginManifest['apiRoutes'][number], 'handler'>;
 type PublicCliSubcommand = Omit<PluginManifest['cliSubcommands'][number], 'handler'>;
 type PublicExportFormat = { name: string; extension: string };
@@ -45,6 +46,17 @@ function publicMcpTools(manifest: PluginManifest): PublicMcpTool[] {
     .map(({ handler, ...tool }) => ({ ...tool, source: 'plugin', plugin: manifest.name }));
 }
 
+export function publicMcpToolsByPlugin(tools: RegisteredMcpTool[]): Map<string, PublicMcpTool[]> {
+  const byPlugin = new Map<string, PublicMcpTool[]>();
+  for (const { handler, plugin, ...tool } of tools) {
+    if (!plugin || tool.enabled === false) continue;
+    const current = byPlugin.get(plugin) ?? [];
+    current.push({ ...tool, source: 'plugin', plugin });
+    byPlugin.set(plugin, current);
+  }
+  return byPlugin;
+}
+
 function publicApiRoutes(manifest: PluginManifest): PublicApiRoute[] {
   return manifest.apiRoutes.map(({ handler, ...route }) => route);
 }
@@ -60,8 +72,10 @@ function publicExportFormats(manifest: PluginManifest): PublicExportFormat[] {
 export function pluginRegistryFromLoadedPlugins(
   plugins: LoadedUnifiedPlugin[],
   statuses: UnifiedPluginStatus[],
+  registeredMcpTools?: RegisteredMcpTool[],
 ): LoadedPluginRegistryEntry[] {
   const statusByName = new Map(statuses.map((status) => [status.name, status]));
+  const runtimeMcpTools = registeredMcpTools ? publicMcpToolsByPlugin(registeredMcpTools) : null;
   return plugins.map((plugin) => {
     const status = statusByName.get(plugin.manifest.name);
     return {
@@ -74,7 +88,7 @@ export function pluginRegistryFromLoadedPlugins(
       description: plugin.manifest.description,
       menu: plugin.manifest.menu[0],
       server: publicUnifiedServerManifest(plugin.manifest.server),
-      mcpTools: publicMcpTools(plugin.manifest),
+      mcpTools: runtimeMcpTools ? (runtimeMcpTools.get(plugin.manifest.name) ?? []) : publicMcpTools(plugin.manifest),
       apiRoutes: publicApiRoutes(plugin.manifest),
       proxy: plugin.manifest.proxy,
       cliSubcommands: publicCliSubcommands(plugin.manifest),
