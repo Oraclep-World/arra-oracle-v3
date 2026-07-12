@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { fetchSettingsSystem } from '../api';
 import { ErrorMessage, LoadingPanel, Spinner } from '../components/AsyncState';
+import { OracleDigToggle } from '../components/OracleDigToggle';
 import { VectorConfigPanel } from '../components/VectorConfigPanel';
 import { VectorProviderServicePanel } from '../components/VectorProviderServicePanel';
 import { VectorSearchToggle } from '../components/VectorSearchToggle';
@@ -112,6 +113,10 @@ export function SettingsPage({ menuCount, pluginCount, surfaceCount, updatedAt, 
       <section className="grid gap-5 xl:grid-cols-2" aria-label="Vector backend configuration">
         <div className="xl:col-span-2">
           <VectorSearchToggle />
+        </div>
+
+        <div className="xl:col-span-2">
+          <OracleDigToggle />
         </div>
 
         <div className="xl:col-span-2">

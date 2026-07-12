@@ -97,6 +97,10 @@ export function routeMeta(pathname: string, search = ''): RouteMeta {
     ]);
   }
 
+  if (pathname === '/oracle-dig') {
+    return base('Oracle Dig findings', 'Oracle Dig', 'Browse mocked provenance findings and typed evidence before the plugin endpoint lands.', [{ label: 'Oracle Dig' }]);
+  }
+
   if (pathname === '/plugins') return base('Plugin list', 'Plugins', 'Registered plugins and exposed runtime surfaces.', [{ label: 'Plugins' }]);
   if (pathname === '/status') return base('Server status', 'Status', 'Server health from /api/v1/health.', [{ label: 'Status' }]);
   if (pathname === '/canvas') return base('Canvas app', 'Canvas', 'Studio alias for canvas.buildwithoracle.com.', [{ label: 'Canvas app' }]);

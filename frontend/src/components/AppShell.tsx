@@ -78,6 +78,7 @@ export function AppShell({
     { to: '/learn', label: 'Learn', description: 'Create and edit learnings' },
     { to: '/memory', label: 'Memory Dashboard', description: 'Confidence, heat, provenance, valid-time, and recency' },
     { to: '/memory/consolidation', label: 'Consolidation Queue', description: 'Review suggested supersede actions' },
+    { to: '/oracle-dig', label: 'Oracle Dig', description: 'Mocked provenance findings and evidence' },
     { to: '/metrics', label: 'Metrics', description: 'Runtime counters from /api/v1/metrics' },
     { to: '/mcp', label: 'MCP', description: 'Tool schemas and groups' },
     { to: '/storage', label: 'Storage', description: 'Backend config from /api/settings/system' },
