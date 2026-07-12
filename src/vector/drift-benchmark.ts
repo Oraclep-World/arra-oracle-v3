@@ -171,6 +171,8 @@ function reportMarkdown(now: Date, result: BenchmarkResult): string {
     '---', 'title: bge-m3 CF Workers AI vs local Ollama drift benchmark', 'tags: [benchmark, bge-m3, cloudflare-ai, ollama]', `created: ${now.toISOString()}`, '---', '',
     '# bge-m3 drift benchmark — CF Workers AI vs local Ollama', '',
     'Decision rule: if mean and p95 cosine drift are both `<0.05`, local/CF mismatch may run with `ORACLE_VECTOR_IDENTITY_MISMATCH=warn`; if either is `>=0.05`, keep a separate collection and do not mix vectors.', '',
+    'Run command: `bun run bench:bge-m3-drift`.',
+    'Configuration is env-only: `BGE_DRIFT_DB_PATH`, `BGE_DRIFT_REPO_ROOT`, `BGE_DRIFT_REPORT_DIR`, `BGE_DRIFT_SAMPLE_SIZE`, `BGE_DRIFT_QUERY_COUNT`, `BGE_DRIFT_TOP_K`, `BGE_DRIFT_QUERIES`, `BGE_DRIFT_LOCAL_MODEL`, `OLLAMA_BASE_URL`/`OLLAMA_HOST`, `CLOUDFLARE_ACCOUNT_ID`/`ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`.', '',
     `Status: **${result.status}**`,
     `Corpus: ${result.docs.length} docs (${result.docs.filter((doc) => doc.language === 'thai').length} Thai / ${result.docs.filter((doc) => doc.language !== 'thai').length} other), ${result.queries.length} queries`,
     `Local: ${result.local.provider}, ${result.local.dimensions} dims, embedded ${result.local.embedded} docs`,
