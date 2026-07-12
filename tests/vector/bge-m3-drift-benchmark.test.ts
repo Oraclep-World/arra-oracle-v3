@@ -35,6 +35,8 @@ describe('bge-m3 drift benchmark harness', () => {
     expect(local.calls.map((call) => call.type)).toEqual(['passage', 'query']);
     const report = fs.readFileSync(result.reportPath, 'utf8');
     expect(report).toContain('Decision rule:');
+    expect(report).toContain('Run command: `bun run bench:bge-m3-drift`');
+    expect(report).toContain('Configuration is env-only:');
     expect(report).toContain('Cloudflare side skipped');
   });
 
