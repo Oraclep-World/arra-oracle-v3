@@ -6,6 +6,7 @@ import type { HttpOracleMcpServerOptions } from '../../mcp/http-server.ts';
 import { OracleMCPServer } from '../../mcp/server.ts';
 import { createHttpOracleMcpServer } from '../../mcp/http-server.ts';
 import { requireMcpBearerAuth } from '../../mcp/http-auth.ts';
+import { loadToolGroupConfig } from '../../config/tool-groups-core.ts';
 
 type Session = { transport: WebStandardStreamableHTTPServerTransport; oracle: OracleMCPServer };
 export type McpStreamableRoutesOptions =
@@ -13,9 +14,20 @@ export type McpStreamableRoutesOptions =
 
 export function createMcpStreamableRoutes(options: McpStreamableRoutesOptions = {}) {
   const manager = new McpHttpSessionManager(options);
-  return new Elysia({ name: 'mcp-streamable-http' }).all('/mcp', ({ request }) => manager.handle(request), {
+  return new Elysia({ name: 'mcp-streamable-http' }).all('/mcp', ({ request, set }) => {
+    if (!isMcpStreamableEnabled(options)) {
+      set.status = 404;
+      return { error: 'Not Found' };
+    }
+    return manager.handle(request);
+  }, {
     detail: { tags: ['mcp'], menu: { group: 'hidden' }, summary: 'Streamable HTTP MCP endpoint' },
   });
+}
+
+function isMcpStreamableEnabled(options: McpStreamableRoutesOptions): boolean {
+  const repoRoot = options.env?.ORACLE_REPO_ROOT;
+  return loadToolGroupConfig(repoRoot).mcp !== false;
 }
 
 class McpHttpSessionManager {
