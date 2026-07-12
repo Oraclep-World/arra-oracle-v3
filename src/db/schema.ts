@@ -4,8 +4,7 @@ export const tenants = sqliteTable('tenants', {
   id: text('id').primaryKey(),
   name: text('name'),
   status: text('status').default('active').notNull(),
-  createdAt: integer('created_at').notNull(),
-  updatedAt: integer('updated_at').notNull(),
+  createdAt: integer('created_at').notNull(), updatedAt: integer('updated_at').notNull(),
 }, (table) => [index('idx_tenants_status').on(table.status)]);
 export const oracleDocuments = sqliteTable('oracle_documents', {
   id: text('id').primaryKey(),
@@ -246,5 +245,6 @@ export const traceLog = sqliteTable('trace_log', {
   index('idx_trace_created').on(table.createdAt),
 ]);
 export { exportJobs } from './export-schema.ts';
+export { oracleFindingEvidence, oracleFindings } from './oracle-dig-schema.ts';
 export { activityLog, menuItems, schedule, settings, supersedeLog } from './logistics-schema.ts';
 export { assertSqliteIdentifier, oracleVectorDocuments, sqliteVecEmbeddingsTable, sqliteVecMetadataTable, vectorDocumentsTable } from './vector-schema.ts';
