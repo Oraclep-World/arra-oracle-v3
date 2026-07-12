@@ -48,6 +48,25 @@ function writeFixture(root: string): { sourceFile: string; original: string } {
   return { sourceFile, original };
 }
 
+function writeTypeFixture(root: string): string {
+  const sourceDir = path.join(root, 'ψ');
+  const fixtures = [
+    ['learnings/alpha.md', '# Alpha\n\nLearning body.'],
+    ['retrospectives/review.md', '# Review\n\nRetrospective body.'],
+    ['plans/roadmap.md', '# Roadmap\n\nPlan body.'],
+    ['handoff/shift.md', '# Shift\n\nHandoff body.'],
+    ['inbox/message.md', '# Message\n\nInbox body.'],
+    ['outbox/note.md', '# Note\n\nOutbox body.'],
+    ['misc/loose.md', '# Loose\n\nDefault note body.'],
+  ];
+  for (const [relPath, content] of fixtures) {
+    const target = path.join(sourceDir, relPath);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, content, 'utf8');
+  }
+  return sourceDir;
+}
+
 describe('OKF export mapping', () => {
   test('parses export flags and rejects bad input', () => {
     expect(parseOkfArgs(['export', '--source', 'ψ', '--out=/tmp/out']).export).toEqual({
@@ -94,6 +113,32 @@ describe('OKF export mapping', () => {
     const log = fs.readFileSync(path.join(outDir, 'log.md'), 'utf8');
     expect(log).toContain('## 2026-07-06');
     expect(log).toContain('[Alpha Learning](/learnings/alpha.md)');
+  });
+
+  test('maps every issue-specified path segment to an OKF type', () => {
+    const root = tmp();
+    const outDir = path.join(root, 'bundle');
+    const sourceDir = writeTypeFixture(root);
+
+    const result = exportOkfBundle({ sourceDir, outDir });
+
+    expect(result.documents).toBe(7);
+    const expectations = {
+      'learnings/alpha.md': 'Learning',
+      'retrospectives/review.md': 'Retrospective',
+      'plans/roadmap.md': 'Plan',
+      'handoff/shift.md': 'Handoff',
+      'inbox/message.md': 'Message',
+      'outbox/note.md': 'Note',
+      'misc/loose.md': 'Note',
+    };
+    for (const [relPath, type] of Object.entries(expectations)) {
+      const exported = splitMarkdown(fs.readFileSync(path.join(outDir, relPath), 'utf8'));
+      expect(exported.frontmatter.type).toBe(type);
+      expect(exported.frontmatter.title).toBeDefined();
+      expect(exported.frontmatter.description).toBeDefined();
+      expect(exported.frontmatter.timestamp).toBeDefined();
+    }
   });
 });
 
