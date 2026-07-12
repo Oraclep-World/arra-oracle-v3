@@ -6,6 +6,7 @@ import { MetricsPage } from './pages/MetricsPage';
 import { McpToolDetailPage } from './pages/McpToolDetailPage';
 import { ExportApp } from './pages/ExportApp';
 import { FeedPage } from './pages/FeedPage';
+import { FleetLogPage } from './pages/FleetLogPage';
 import { ForumPage } from './pages/ForumPage';
 import { LearnPage } from './pages/LearnPage';
 import { MemoryPage } from './pages/MemoryPage';
@@ -44,6 +45,7 @@ export const frontendRoutes = [
   '/ask',
   '/export',
   '/feed',
+  '/fleet-log',
   '/forum',
   '/activity',
   '/traces',
@@ -121,6 +123,7 @@ export function DashboardRoutes({
       <Route path="/ask" element={<AskPage />} />
       <Route path="/export" element={<ExportApp />} />
       <Route path="/feed" element={<FeedPage />} />
+      <Route path="/fleet-log" element={<FleetLogPage />} />
       <Route path="/forum" element={<ForumPage />} />
       <Route path="/activity" element={<ActivityPage />} />
       <Route path="/traces" element={<ActivityPage />} />
