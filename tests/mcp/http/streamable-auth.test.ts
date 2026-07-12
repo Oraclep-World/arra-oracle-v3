@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { Elysia } from 'elysia';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import { createApp } from '../../../src/server.ts';
 import { createMcpStreamableRoutes } from '../../../src/routes/mcp/index.ts';
 import type { ToolGroupConfig } from '../../../src/config/tool-groups.ts';
@@ -9,6 +12,7 @@ const originalEnv = {
   ORACLE_HTTP_URL: process.env.ORACLE_HTTP_URL,
   ORACLE_MCP_HTTP_TOKEN: process.env.ORACLE_MCP_HTTP_TOKEN,
   ARRA_API_TOKEN: process.env.ARRA_API_TOKEN,
+  ORACLE_REPO_ROOT: process.env.ORACLE_REPO_ROOT,
 };
 
 const allToolGroups: ToolGroupConfig = {
@@ -31,6 +35,7 @@ afterEach(() => {
   restoreEnv('ORACLE_HTTP_URL', originalEnv.ORACLE_HTTP_URL);
   restoreEnv('ORACLE_MCP_HTTP_TOKEN', originalEnv.ORACLE_MCP_HTTP_TOKEN);
   restoreEnv('ARRA_API_TOKEN', originalEnv.ARRA_API_TOKEN);
+  restoreEnv('ORACLE_REPO_ROOT', originalEnv.ORACLE_REPO_ROOT);
 });
 
 describe('Streamable HTTP MCP bearer auth', () => {
@@ -114,6 +119,28 @@ describe('Streamable HTTP MCP bearer auth', () => {
 
     expect(deleted.status).toBe(200);
     expect(afterDelete.status).toBe(404);
+  });
+
+  test('disables and re-enables /mcp by config live', async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-streamable-gate-'));
+    try {
+      const configPath = path.join(repoRoot, 'arra.config.json');
+      fs.writeFileSync(configPath, JSON.stringify({ mcp: false }));
+
+      const app = mcpApp({
+        ORACLE_MCP_HTTP_TOKEN: 'mcp-secret',
+        ORACLE_REPO_ROOT: repoRoot,
+      });
+      const offResponse = await postMcp(app, initializeRequest(), 'mcp-secret');
+      expect(offResponse.status).toBe(404);
+
+      fs.writeFileSync(configPath, JSON.stringify({ mcp: true }));
+      const onResponse = await postMcp(app, initializeRequest(), 'mcp-secret');
+      expect(onResponse.status).toBe(200);
+      expect(onResponse.headers.get('mcp-session-id')).not.toBeNull();
+    } finally {
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
   });
 });
 

@@ -112,6 +112,7 @@ describe('tool-groups', () => {
     expect(config.forum).toBe(true);
     expect(config.oracle).toBe(true);
     expect(config.trace).toBe(true);
+    expect(config.mcp).toBe(true);
   });
 
   it('all tool names follow oracle_ prefix convention', () => {
@@ -203,6 +204,18 @@ describe('tool-groups', () => {
       expect(config.search).toBe(false);
       expect(config.knowledge).toBe(true);
       expect(config.plugins).toEqual([{ name: 'dig', enabled: true, weight: 1 }, { name: 'search' }]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reads mcp surface toggle from config file', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'arra-plugin-manifest-'));
+    try {
+      fs.writeFileSync(path.join(dir, 'arra.config.json'), JSON.stringify({ mcp: false }));
+      const config = loadToolGroupConfig(dir);
+      expect(config.mcp).toBe(false);
+      expect(config.search).toBe(true);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

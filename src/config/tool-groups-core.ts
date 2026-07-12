@@ -36,6 +36,7 @@ export type ToolGroupConfig = Record<ToolGroupName, boolean> & {
   plugins?: PluginManifestEntry[];
   disabled_tools?: string[];
   enabled_tools?: string[];
+  mcp?: boolean;
 };
 
 const DEFAULT_CONFIG: ToolGroupConfig = {
@@ -46,6 +47,7 @@ const DEFAULT_CONFIG: ToolGroupConfig = {
   oracle: true,
   trace: true,
   standalone: true,
+  mcp: true,
 };
 
 const ALL_TOOL_NAMES: ReadonlySet<string> = new Set(
@@ -77,12 +79,21 @@ function mergeRaw(raw: Record<string, any>): ToolGroupConfig {
       if (typeof raw.tools[group] === 'boolean') merged[group] = raw.tools[group];
     }
   }
+  if (typeof raw.mcp === 'boolean') merged.mcp = raw.mcp;
   if (Array.isArray(raw.plugins)) {
     merged.plugins = raw.plugins.map(normalizePluginEntry).filter((p): p is PluginManifestEntry => !!p);
   }
   if (Array.isArray(raw.disabled_tools)) merged.disabled_tools = raw.disabled_tools.filter((t: unknown) => typeof t === 'string').map(normalizeToolName);
   if (Array.isArray(raw.enabled_tools)) merged.enabled_tools = raw.enabled_tools.filter((t: unknown) => typeof t === 'string').map(normalizeToolName);
   return merged;
+}
+
+function hasToolConfig(raw: Record<string, any>): boolean {
+  return Array.isArray(raw.plugins)
+    || isRecord(raw.tools)
+    || Array.isArray(raw.disabled_tools)
+    || Array.isArray(raw.enabled_tools)
+    || typeof raw.mcp === 'boolean';
 }
 
 function normalizePluginEntry(entry: unknown): PluginManifestEntry | null {
@@ -106,7 +117,7 @@ function isRecord(value: unknown): value is Record<string, any> {
 export function loadToolGroupConfig(repoRoot?: string): ToolGroupConfig {
   const root = repoRoot || process.env.ORACLE_REPO_ROOT || process.cwd();
   const localConfig = readJsonSafe(path.join(root, 'arra.config.json'));
-  if (localConfig && (localConfig.plugins || localConfig.tools || localConfig.disabled_tools || localConfig.enabled_tools)) {
+  if (localConfig && hasToolConfig(localConfig)) {
     console.error('[ToolGroups] Using arra.config.json from repo root');
     return mergeRaw(localConfig);
   }
@@ -116,7 +127,7 @@ export function loadToolGroupConfig(repoRoot?: string): ToolGroupConfig {
     return mergeRaw(localPluginManifest);
   }
   const globalConfig = readJsonSafe(path.join(ORACLE_DATA_DIR, 'config.json'));
-  if (globalConfig && (globalConfig.plugins || globalConfig.tools || globalConfig.disabled_tools || globalConfig.enabled_tools)) {
+  if (globalConfig && hasToolConfig(globalConfig)) {
     console.error(`[ToolGroups] Using ${ORACLE_DATA_DIR}/config.json`);
     return mergeRaw(globalConfig);
   }
