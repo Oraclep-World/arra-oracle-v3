@@ -271,8 +271,8 @@ export async function handleSearch(
 
   // Log search
   const searchTime = Date.now() - startTime;
-  logSearch(query, type, requestedMode, total, searchTime, results);
-  results.forEach(r => logDocumentAccess(r.id, 'search'));
+  logSearch(query, type, requestedMode, total, searchTime, results, resolvedProject ?? undefined);
+  results.forEach(r => logDocumentAccess(r.id, 'search', resolvedProject ?? undefined));
 
   return {
     results,
