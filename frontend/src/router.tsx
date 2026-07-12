@@ -12,6 +12,7 @@ import { LearnPage } from './pages/LearnPage';
 import { MemoryPage } from './pages/MemoryPage';
 import { MemoryConsolidationPage } from './pages/MemoryConsolidationPage';
 import { MenuPage } from './pages/MenuPage';
+import { OracleDigPage } from './pages/OracleDigPage';
 import { PluginsPage } from './pages/PluginsPage';
 import { CanvasAliasPage } from './pages/CanvasAliasPage';
 import { CanvasPluginsPage } from './pages/CanvasPluginsPage';
@@ -52,6 +53,7 @@ export const frontendRoutes = [
   '/learn',
   '/memory',
   '/memory/consolidation',
+  '/oracle-dig',
   '/vector',
   '/vector/search',
   '/vector/documents',
@@ -130,6 +132,7 @@ export function DashboardRoutes({
       <Route path="/learn" element={<LearnPage />} />
       <Route path="/memory" element={<MemoryPage />} />
       <Route path="/memory/consolidation" element={<MemoryConsolidationPage />} />
+      <Route path="/oracle-dig" element={<OracleDigPage />} />
       <Route path="/menu" element={menuPage} />
       <Route path="/vector" element={<VectorPage />} />
       <Route path="/vector/search" element={<VectorSearchPage />} />
