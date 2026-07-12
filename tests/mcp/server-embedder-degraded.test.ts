@@ -58,6 +58,42 @@ test('MCP embedder degradation is observable and FTS5 search still returns', asy
   }
 });
 
+test('MCP keeps FTS5 tools available when degraded embedder prevents vector store construction', async () => {
+  process.env.ORACLE_HTTP_URL = '';
+  process.env.ORACLE_VECTOR_ENABLED = '1';
+  delete process.env.ORACLE_RERANKER_URL;
+  const connection = createDatabase(':memory:');
+  seedFtsDoc(connection);
+  const warningLines: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => warningLines.push(args.map(String).join(' '));
+  const server = new OracleMCPServer({
+    toolGroups: allToolGroups,
+    embeddedDeps: {
+      createVectorStoreForModel: () => { throw new Error('OpenAI API key required. Set OPENAI_API_KEY.'); },
+      getEmbeddingModels: () => ({ 'bge-m3': { collection: 'oracle_knowledge', model: 'bge-m3', provider: 'openai' } }),
+      createDatabase: () => connection,
+      probeEmbedder: async () => ({
+        status: 'degraded', provider: 'openai', source: 'env', explicit: true,
+        reason: 'no embedder configured/reachable — FTS5-only (OpenAI API key required. Set OPENAI_API_KEY.)',
+        checkedAt: 'now',
+      }),
+    },
+  });
+  try {
+    const stats = await toolJson(server, 'oracle_stats', {});
+    expect(stats.vector_status).toBe('degraded');
+    expect(stats.embedder_provider).toBe('openai');
+    const search = await toolJson(server, 'oracle_search', { query: 'needle', mode: 'hybrid', limit: 3 });
+    expect(search.results.map((item: { id: string }) => item.id)).toContain('fts-doc');
+    expect(search.metadata.vectorAvailable).toBe(false);
+    expect(warningLines.join('\n')).toContain('[Oracle] embedder openai unreachable');
+  } finally {
+    console.error = originalError;
+    await server.cleanup();
+  }
+});
+
 async function toolJson(server: OracleMCPServer, name: string, args: Record<string, unknown>) {
   const response = await callToolHandler(server)({ params: { name, arguments: args } });
   expect(response.isError).toBeUndefined();
