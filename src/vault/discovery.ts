@@ -19,6 +19,7 @@ export function walkFiles(
   if (!fs.existsSync(dir)) return results;
 
   for (const item of fs.readdirSync(dir)) {
+    if (item === '.git' || item === 'node_modules') continue; // nested repos break migrate (EACCES on read-only pack files)
     const fullPath = path.join(dir, item);
     const stat = fs.lstatSync(fullPath); // lstat: don't follow symlinks
     if (stat.isSymbolicLink()) continue;
