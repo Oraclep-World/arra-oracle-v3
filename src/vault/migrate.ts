@@ -158,6 +158,11 @@ function migrate(opts: { dryRun: boolean; symlink?: boolean }): MigrateResult {
       // Skip .gitkeep files
       if (path.basename(relativePath) === '.gitkeep') continue;
 
+      // ψ/inbox is comms, not knowledge — never auto-publish it to the shared
+      // vault (it may hold sensitive agent-to-agent messages). Handoffs under
+      // ψ/inbox/handoff/ are the deliberate exception (see PROJECT_CATEGORIES).
+      if (relativePath.startsWith('ψ/inbox/') && !relativePath.startsWith('ψ/inbox/handoff/')) continue;
+
       const vaultRelPath = mapToVaultPath(relativePath, project);
       const dest = path.join(vaultPath, vaultRelPath);
 
