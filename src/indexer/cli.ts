@@ -6,16 +6,20 @@
  * ORACLE_VECTOR_ENABLED=1). This keeps `bun run index` a one-shot refresh of
  * both FTS5 and LanceDB. Opt out with ORACLE_SKIP_VECTOR_REINDEX=1.
  *
- * Vector embedding still runs through the canonical src/scripts/index-model.ts
- * path (replaceDocuments) — we shell out to it rather than duplicating logic.
+ * Vector embedding runs through the vector server's atomic rebuild
+ * (POST /api/vector/index/start {source:sqlite} → rebuildCollection): it embeds
+ * every doc then swaps the collection ONCE (no mid-run partial state) and reads
+ * the embedding provider from the server config. We do NOT shell out to
+ * src/scripts/index-model.ts — that path hardcodes provider=ollama (wipes on a
+ * non-ollama/CF node) and replaces batch-0 then appends (a mid-run crash leaves
+ * the collection truncated, not merely stale).
  *
  * BEST-EFFORT: vector embedding must never fail the FTS5 reindex (which has
- * already succeeded by the time we get here). If GPU/ollama/LanceDB is down we
- * warn on one line and exit 0 — FTS5 search keeps working, semantic just goes
- * stale until the next successful run.
+ * already succeeded by the time we get here). If the vector server is down or
+ * the job errors, we warn on one line and exit 0 — FTS5 search keeps working,
+ * semantic embeddings just stay unchanged until the next successful run.
  */
 
-import path from 'path';
 import { runOracleReindex } from './runner.ts';
 import { isVectorSectionEnabled, loadVectorConfig } from '../vector/config.ts';
 
@@ -28,6 +32,14 @@ function primaryModelKey(): string {
     }
   }
   return 'bge-m3';
+}
+
+interface IndexStatus {
+  jobId?: string;
+  status?: string;
+  current?: number;
+  total?: number;
+  error?: string;
 }
 
 async function autoIndexVectors(): Promise<void> {
@@ -43,35 +55,89 @@ async function autoIndexVectors(): Promise<void> {
   }
 
   const model = primaryModelKey();
-  console.log(`\n[Auto-Vector] vector section enabled → populating "${model}" embeddings...`);
-  const scriptPath = path.resolve(import.meta.dir, '../scripts/index-model.ts');
-  // Best-effort: never let an embedding failure break the (already-complete) FTS
-  // reindex. Warn + skip on any failure (GPU/ollama down, spawn error, etc.).
+  const port = loadVectorConfig()?.port ?? 8081;
+  const base = `http://127.0.0.1:${port}/api`;
+  const startUrl = `${base}/vector/index/start`;
+  const statusUrl = `${base}/vector/index/status`;
+
+  console.log(`\n[Auto-Vector] vector section enabled → embedding "${model}" via vector server (:${port})...`);
+
   try {
-    // stdout inherited (live progress); stderr piped so a failure collapses to
-    // one warn line instead of dumping the subprocess stack trace.
-    const proc = Bun.spawn(['bun', scriptPath, model], { stdout: 'inherit', stderr: 'pipe' });
-    const code = await proc.exited;
-    if (code !== 0) {
-      const errText = await new Response(proc.stderr).text();
-      const lines = errText.split('\n').map(l => l.trim()).filter(Boolean);
-      const reason =
-        lines.filter(l => /^error:/i.test(l)).pop() ||
-        lines.filter(l => /error|fail|unable|cannot/i.test(l)).pop() ||
-        lines[0] ||
-        `exit ${code}`;
+    const res = await fetch(startUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model, source: 'sqlite' }),
+    });
+    if (!res.ok) {
+      const detail = (await res.text().catch(() => '')).slice(0, 200) || `HTTP ${res.status}`;
       console.warn(
-        `[Auto-Vector] embedding skipped (${reason}) — FTS index is valid; ` +
-          `semantic search may be stale. Re-run: bun src/scripts/index-model.ts ${model}`
+        `[Auto-Vector] embedding skipped (vector server ${res.status}: ${detail}) — ` +
+          `FTS index is valid; vector embeddings unchanged until the next successful run.`
       );
       return;
     }
-    console.log('[Auto-Vector] embeddings complete!');
+    const started = (await res.json()) as IndexStatus;
+
+    // The start endpoint is fire-and-forget; poll until the job reaches a
+    // terminal state so `bun run index` stays a one-shot refresh of BOTH FTS
+    // and vectors. Bail only on a real signal — the server going unreachable
+    // mid-run — never on an arbitrary timeout.
+    let lastReported = -1;
+    let unreachable = 0;
+    for (;;) {
+      await Bun.sleep(2000);
+      let status: IndexStatus;
+      try {
+        const sres = await fetch(statusUrl);
+        if (!sres.ok) throw new Error(`HTTP ${sres.status}`);
+        status = (await sres.json()) as IndexStatus;
+        unreachable = 0;
+      } catch {
+        if (++unreachable >= 3) {
+          console.warn(
+            `[Auto-Vector] status unknown — vector server became unreachable mid-run; ` +
+              `FTS index is valid, vector state may be incomplete. Check: GET ${statusUrl}`
+          );
+          return;
+        }
+        continue;
+      }
+
+      // A different job replaced ours (concurrent reindex) — stop watching.
+      if (started.jobId && status.jobId && status.jobId !== started.jobId) {
+        console.warn(
+          `[Auto-Vector] a different index job is now running (${status.jobId}); ` +
+            `stopped waiting — check: GET ${statusUrl}`
+        );
+        return;
+      }
+
+      if (status.total && status.current !== lastReported) {
+        lastReported = status.current ?? -1;
+        console.log(`  [Auto-Vector] ${status.current}/${status.total} embedded...`);
+      }
+
+      if (status.status === 'completed') {
+        console.log('[Auto-Vector] embeddings complete!');
+        return;
+      }
+      if (status.status === 'error') {
+        console.warn(
+          `[Auto-Vector] embedding failed (${status.error ?? 'unknown'}) — ` +
+            `FTS index is valid; vector state may be incomplete. Retry: POST ${startUrl} {"source":"sqlite"}`
+        );
+        return;
+      }
+      if (status.status === 'stopped') {
+        console.warn('[Auto-Vector] embedding stopped by operator — vector state may be incomplete.');
+        return;
+      }
+    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(
-      `[Auto-Vector] embedding skipped (${msg}) — FTS index is valid; ` +
-        `semantic search may be stale. Re-run: bun src/scripts/index-model.ts ${model}`
+      `[Auto-Vector] embedding skipped (${msg}) — FTS index is valid; semantic search unchanged. ` +
+        `Ensure the vector server is running, then retry: POST ${startUrl} {"source":"sqlite"}`
     );
   }
 }
