@@ -11,7 +11,7 @@ import { detectProject } from '../server/project-detect.ts';
 import { getVectorStoreByModel, getEmbeddingModels } from '../vector/factory.ts';
 import { REPO_ROOT } from '../config.ts';
 import { buildLearningMarkdown, dateSlug, learningContentHash, extractContentHash } from '../learn/markdown.ts';
-import { writeLearningIndexRows } from '../learn/index-rows.ts';
+import { writeLearningIndexRows, recordOrphanLearning, ORPHAN_LEDGER } from '../learn/index-rows.ts';
 
 // Lazy-loaded on first use — avoids top-level await which causes a TDZ
 // error in consumers that import learnToolDef synchronously (the tools
@@ -279,16 +279,22 @@ export async function handleLearn(ctx: ToolContext, input: OracleLearnInput): Pr
       now,
     });
   } catch (err) {
+    // Same posture as the HTTP path (routes/knowledge/learn.ts): the file is on
+    // disk, so this is recoverable — and it goes in the orphan ledger either way,
+    // because a caller that gives up here leaves a file no search can reach.
+    const detail = err instanceof Error ? err.message : String(err);
+    recordOrphanLearning(sourceFileRel, id, detail);
     return {
       content: [{
         type: 'text',
         text: JSON.stringify({
           success: false,
-          error: `Index write failed: ${err instanceof Error ? err.message : String(err)}`,
+          error: `Index write failed: ${detail}`,
           file: sourceFileRel,
           id,
           fileWritten: true,
           retrySafe: true,
+          recorded: ORPHAN_LEDGER,
           tip: 'The learning file IS saved. Retry with the SAME pattern text — the retry repairs the index idempotently. Do NOT reword the pattern; that would create a duplicate entry.'
         }, null, 2)
       }],

@@ -15,11 +15,64 @@
  *     (competing writer / ambiguous commit), report success instead
  */
 
+import fs from 'fs';
+import path from 'path';
 import type { Database } from 'bun:sqlite';
 import type { BunSQLiteDatabase } from 'drizzle-orm/bun-sqlite';
 import type * as schema from '../db/schema.ts';
 import { oracleDocuments } from '../db/schema.ts';
 import { isDbLockError } from '../db/errors.ts';
+import { ORACLE_DATA_DIR } from '../config.ts';
+
+/**
+ * Thrown when the markdown file landed but its index rows did not.
+ *
+ * Carries enough context for the caller to tell the user something useful:
+ * the learning is NOT lost, and retrying the same text repairs it. Without
+ * this, callers only saw "database is locked" and reasonably assumed the write
+ * had failed — which is how duplicate letters were born (and, when they gave
+ * up instead, how a file ended up on disk that no search could ever find).
+ */
+export class LearningIndexError extends Error {
+  readonly fileWritten = true;
+  constructor(
+    readonly sourceFile: string,
+    readonly docId: string,
+    readonly cause: unknown,
+  ) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = 'LearningIndexError';
+  }
+}
+
+/** Append-only ledger of learnings whose file exists but whose index rows do not. */
+export const ORPHAN_LEDGER = path.join(ORACLE_DATA_DIR, 'learn-orphans.jsonl');
+
+/**
+ * Record an orphaned learning so "the file exists but nothing indexed it" stops
+ * being invisible.
+ *
+ * Found 2026-07-30 (ora101, hitting a real "database is locked" in the field):
+ * on that path the file is written and the index rows are not, and NOTHING comes
+ * back for it later — there is no cron that runs the FTS reindex, and the vector
+ * cron embeds *from sqlite*, so a row missing from sqlite is missing from vectors
+ * too. Same shape as the silent vector skip fixed earlier the same night: the
+ * system knew, and said nothing anybody could act on.
+ *
+ * Never throws: diagnostics must not add a second failure on top of the first.
+ */
+export function recordOrphanLearning(sourceFile: string, docId: string, detail: string): void {
+  try {
+    fs.mkdirSync(ORACLE_DATA_DIR, { recursive: true });
+    fs.appendFileSync(
+      ORPHAN_LEDGER,
+      JSON.stringify({ sourceFile, docId, detail: detail.slice(0, 300), at: Date.now() }) + '\n',
+      'utf-8',
+    );
+  } catch {
+    /* diagnostics only */
+  }
+}
 
 export interface LearningIndexRows {
   id: string;

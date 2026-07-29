@@ -205,3 +205,43 @@ process.on('exit', () => {
   if (ORIGINAL_DATA_DIR) process.env.ORACLE_DATA_DIR = ORIGINAL_DATA_DIR;
   else delete process.env.ORACLE_DATA_DIR;
 });
+
+// ── orphan ledger + actionable failure (ora101, 2026-07-30) ──────────────────
+// Field report: a real "database is locked" left the file on disk with EMPTY
+// index rows, and the HTTP layer answered a bare 500. Nothing reindexes FTS on a
+// timer, and the vector cron embeds *from sqlite* — so a caller who believes the
+// error and stops has created a file no search can ever reach.
+describe('handleLearn — index failure is recorded, not just reported', () => {
+  let h: Harness;
+
+  beforeEach(() => {
+    h = makeHarness();
+  });
+
+  afterEach(() => {
+    try { h.sqlite.close(); } catch {}
+    try { fs.rmSync(LEARNINGS_DIR, { recursive: true, force: true }); } catch {}
+  });
+
+  it('appends to the orphan ledger and tells the caller it is retry-safe', async () => {
+    const { ORPHAN_LEDGER } = await import('../../learn/index-rows.ts');
+    const before = fs.existsSync(ORPHAN_LEDGER) ? fs.readFileSync(ORPHAN_LEDGER, 'utf-8').split('\n').length : 0;
+
+    h.sqlite.exec('DROP TABLE oracle_fts');   // force the index write to fail
+    const res = await handleLearn(h.ctx, { pattern: 'orphan ledger pattern\nwritten but unindexed' });
+    const parsed = JSON.parse(res.content[0].text);
+
+    expect(res.isError).toBe(true);
+    expect(parsed.fileWritten).toBe(true);
+    expect(parsed.retrySafe).toBe(true);
+    expect(parsed.recorded).toBe(ORPHAN_LEDGER);
+    expect(parsed.tip).toContain('SAME pattern');
+
+    // the ledger grew, and the newest entry names this document
+    const lines = fs.readFileSync(ORPHAN_LEDGER, 'utf-8').trim().split('\n');
+    expect(lines.length).toBeGreaterThanOrEqual(before);
+    const last = JSON.parse(lines[lines.length - 1]);
+    expect(last.docId).toBe(parsed.id);
+    expect(last.sourceFile).toBe(parsed.file);
+  });
+});

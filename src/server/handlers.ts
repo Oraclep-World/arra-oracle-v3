@@ -18,7 +18,7 @@ import { detectProject } from './project-detect.ts';
 import { coerceConcepts } from '../tools/learn.ts';
 import { createVectorProxy } from './vector-proxy.ts';
 import { buildLearningMarkdown, dateSlug, learningContentHash, extractContentHash } from '../learn/markdown.ts';
-import { writeLearningIndexRows } from '../learn/index-rows.ts';
+import { writeLearningIndexRows, LearningIndexError, recordOrphanLearning } from '../learn/index-rows.ts';
 import { localNativeVectorDisabledReason, localVectorIndexMissingReason, logLocalVectorDisabled } from '../vector/cpu-capabilities.ts';
 import { isVectorSectionEnabled } from '../vector/config.ts';
 
@@ -753,16 +753,25 @@ export function persistLearningDoc(opts: {
   const sourceFile = `${subdir}/${filename}`;
 
   // documents row + FTS row in one transaction; verify-after-error on locks.
-  writeLearningIndexRows(sqlite, db, {
-    id,
-    sourceFile,
-    markdown: frontmatter,
-    concepts: conceptsList,
-    project: opts.project ?? null,
-    origin: opts.origin ?? null,
-    createdBy: opts.createdBy || 'oracle_learn',
-    now,
-  });
+  // The file is already on disk at this point, so a failure here means "written
+  // but unindexed" — log it to the orphan ledger and throw a typed error the
+  // HTTP layer can turn into actionable advice instead of a bare 500.
+  try {
+    writeLearningIndexRows(sqlite, db, {
+      id,
+      sourceFile,
+      markdown: frontmatter,
+      concepts: conceptsList,
+      project: opts.project ?? null,
+      origin: opts.origin ?? null,
+      createdBy: opts.createdBy || 'oracle_learn',
+      now,
+    });
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    recordOrphanLearning(sourceFile, id, detail);
+    throw new LearningIndexError(sourceFile, id, err);
+  }
 
   logLearning(id, pattern, opts.source || 'Oracle Learn', conceptsList);
 
