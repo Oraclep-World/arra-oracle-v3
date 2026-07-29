@@ -17,7 +17,8 @@ import { localVectorOperations } from './vector-operations.ts';
 import { detectProject } from './project-detect.ts';
 import { coerceConcepts } from '../tools/learn.ts';
 import { createVectorProxy } from './vector-proxy.ts';
-import { buildLearningMarkdown, dateSlug } from '../learn/markdown.ts';
+import { buildLearningMarkdown, dateSlug, learningContentHash, extractContentHash } from '../learn/markdown.ts';
+import { writeLearningIndexRows } from '../learn/index-rows.ts';
 import { localNativeVectorDisabledReason, localVectorIndexMissingReason, logLocalVectorDisabled } from '../vector/cpu-capabilities.ts';
 import { isVectorSectionEnabled } from '../vector/config.ts';
 
@@ -710,7 +711,7 @@ export function persistLearningDoc(opts: {
   project?: string | null;
   createdBy?: string;      // oracle_documents.created_by
   footer?: string;         // footer line under the content, e.g. '*Added via Oracle Learn*'
-}): { file: string; id: string } {
+}): { file: string; id: string; deduped?: boolean } {
   const { pattern, subdir, filename, id } = opts;
   const now = new Date();
 
@@ -718,50 +719,54 @@ export function persistLearningDoc(opts: {
   fs.mkdirSync(dir, { recursive: true });
   const filePath = path.join(dir, filename);
 
-  if (fs.existsSync(filePath)) {
-    throw new Error(`File already exists: ${filename}`);
-  }
-
-  const title = pattern.split('\n')[0].substring(0, 80);
   const conceptsList = coerceConcepts(opts.concepts);
-  const frontmatter = buildLearningMarkdown({
-    id,
-    pattern,
-    title,
-    concepts: conceptsList,
-    createdAt: now,
-    source: opts.source,
-    project: opts.project,
-    footer: opts.footer,
-  });
+  const contentHash = learningContentHash(pattern);
 
-  fs.writeFileSync(filePath, frontmatter, 'utf-8');
+  // Idempotent retry (bug reported by ora101, 2026-07-29): a previous call can
+  // die with "database is locked" AFTER the file landed but before the index
+  // rows committed. Identical content hash → repair the index rows below and
+  // succeed instead of failing (failing here is what minted duplicate letters).
+  let frontmatter: string;
+  let deduped = false;
+  if (fs.existsSync(filePath)) {
+    const existing = fs.readFileSync(filePath, 'utf-8');
+    if (extractContentHash(existing) !== contentHash) {
+      throw new Error(`File already exists: ${filename}`);
+    }
+    frontmatter = existing;
+    deduped = true;
+  } else {
+    const title = pattern.split('\n')[0].substring(0, 80);
+    frontmatter = buildLearningMarkdown({
+      id,
+      pattern,
+      title,
+      concepts: conceptsList,
+      createdAt: now,
+      source: opts.source,
+      project: opts.project,
+      footer: opts.footer,
+    });
+    fs.writeFileSync(filePath, frontmatter, 'utf-8');
+  }
 
   const sourceFile = `${subdir}/${filename}`;
 
-  db.insert(oracleDocuments).values({
+  // documents row + FTS row in one transaction; verify-after-error on locks.
+  writeLearningIndexRows(sqlite, db, {
     id,
-    type: 'learning',
     sourceFile,
-    concepts: JSON.stringify(conceptsList),
-    createdAt: now.getTime(),
-    updatedAt: now.getTime(),
-    indexedAt: now.getTime(),
-    origin: opts.origin || null,
-    project: opts.project || null,
+    markdown: frontmatter,
+    concepts: conceptsList,
+    project: opts.project ?? null,
+    origin: opts.origin ?? null,
     createdBy: opts.createdBy || 'oracle_learn',
-  }).run();
-
-  // FTS5 has no unique constraint on id — delete-then-insert to be idempotent.
-  sqlite.prepare(`DELETE FROM oracle_fts WHERE id = ?`).run(id);
-  sqlite.prepare(`
-    INSERT INTO oracle_fts (id, content, concepts)
-    VALUES (?, ?, ?)
-  `).run(id, frontmatter, conceptsList.join(' '));
+    now,
+  });
 
   logLearning(id, pattern, opts.source || 'Oracle Learn', conceptsList);
 
-  return { file: sourceFile, id };
+  return { file: sourceFile, id, ...(deduped && { deduped: true }) };
 }
 
 export function handleLearn(
@@ -787,16 +792,23 @@ export function handleLearn(
   // On slug collision (same date + same first-50-char prefix), append -2, -3, …
   // until unique. Prevents 500s when two writes share a slug within one day
   // (e.g. repeated hot-write snapshots from the same agent).
+  // EXCEPTION: if a colliding file holds this exact content (same hash), this
+  // is a retry of a write whose failure was cosmetic — suffixing it is
+  // precisely how duplicate letters were minted. Reuse the existing filename
+  // so persistLearningDoc takes its idempotent repair path instead.
   const subdir = 'ψ/memory/learnings';
   const learningsDir = path.join(REPO_ROOT, subdir);
+  const contentHash = learningContentHash(pattern);
   let uniqueSlug = slug;
   let suffix = 2;
   while (fs.existsSync(path.join(learningsDir, `${dateStr}_${uniqueSlug}.md`))) {
+    const existing = fs.readFileSync(path.join(learningsDir, `${dateStr}_${uniqueSlug}.md`), 'utf-8');
+    if (extractContentHash(existing) === contentHash) break;
     uniqueSlug = `${slug}-${suffix}`;
     suffix++;
   }
 
-  const { file, id } = persistLearningDoc({
+  const { file, id, deduped } = persistLearningDoc({
     pattern,
     subdir,
     filename: `${dateStr}_${uniqueSlug}.md`,
@@ -808,7 +820,7 @@ export function handleLearn(
     createdBy: 'oracle_learn',
   });
 
-  return { success: true, file, id };
+  return { success: true, file, id, ...(deduped && { deduped: true }) };
 }
 
 /**

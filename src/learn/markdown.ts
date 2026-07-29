@@ -16,6 +16,15 @@ export function learningContentHash(pattern: string): string {
   return `sha256:${createHash('sha256').update(pattern, 'utf8').digest('hex')}`;
 }
 
+/**
+ * Extract the `hash: sha256:...` frontmatter line written by
+ * buildLearningMarkdown. Returns null for legacy files without one.
+ */
+export function extractContentHash(markdown: string): string | null {
+  const m = markdown.match(/^hash:\s*(sha256:[0-9a-f]{64})\s*$/im);
+  return m ? m[1] : null;
+}
+
 export function dateSlug(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }

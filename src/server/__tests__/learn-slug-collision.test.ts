@@ -90,6 +90,22 @@ describe('handleLearn — slug collision', () => {
     expect(markdown).toContain('arra_concepts: [frontmatter, vector]');
     expect(markdown).toContain('project: github.com/soul-brews-studio/arra-oracle-v3');
   });
+
+  it('retrying an EXACT earlier pattern reuses its file instead of minting a new suffix', () => {
+    // "body two" already exists as the -2 file. A retry (e.g. after a cosmetic
+    // "database is locked" error) must dedupe onto it — the pre-fix behavior
+    // minted -4 here, which is how duplicate letters were born (ora101 bug,
+    // 2026-07-29).
+    const learningsDir = path.join(TMP_REPO_ROOT, 'ψ/memory/learnings');
+    const before = fs.readdirSync(learningsDir).length;
+
+    const res = handleLearn(`${PATTERN_PREFIX}\nbody two`);
+    expect(res.success).toBe(true);
+    expect(res.deduped).toBe(true);
+    expect(res.file).toMatch(new RegExp(`_${EXPECTED_SLUG}-2\\.md$`));
+
+    expect(fs.readdirSync(learningsDir).length).toBe(before);
+  });
 });
 
 afterAll(() => {

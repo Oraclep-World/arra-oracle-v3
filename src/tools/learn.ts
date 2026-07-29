@@ -7,11 +7,11 @@
 
 import path from 'path';
 import fs from 'fs';
-import { oracleDocuments } from '../db/schema.ts';
 import { detectProject } from '../server/project-detect.ts';
 import { getVectorStoreByModel, getEmbeddingModels } from '../vector/factory.ts';
 import { REPO_ROOT } from '../config.ts';
-import { buildLearningMarkdown, dateSlug } from '../learn/markdown.ts';
+import { buildLearningMarkdown, dateSlug, learningContentHash, extractContentHash } from '../learn/markdown.ts';
+import { writeLearningIndexRows } from '../learn/index-rows.ts';
 
 // Lazy-loaded on first use — avoids top-level await which causes a TDZ
 // error in consumers that import learnToolDef synchronously (the tools
@@ -225,44 +225,76 @@ export async function handleLearn(ctx: ToolContext, input: OracleLearnInput): Pr
     sourceFileRel = `ψ/memory/learnings/${filename}`;
   }
 
-  if (fs.existsSync(filePath)) {
-    throw new Error(`File already exists: ${filename}`);
-  }
-
   const id = `learning_${dateStr}_${slug}`;
   const title = pattern.split('\n')[0].substring(0, 80);
   const conceptsList = coerceConcepts(concepts);
-  const frontmatter = buildLearningMarkdown({
-    id,
-    pattern,
-    title,
-    concepts: conceptsList,
-    createdAt: now,
-    source,
-    project,
-  });
+  const contentHash = learningContentHash(pattern);
 
-  fs.writeFileSync(filePath, frontmatter, 'utf-8');
+  // Idempotent retry (bug reported by ora101, 2026-07-29): a previous call can
+  // die with "database is locked" AFTER the file landed but before the index
+  // rows committed. Retrying used to throw "File already exists", which pushed
+  // callers into rephrasing — minting duplicate learnings. Identical content
+  // hash → repair the index rows and report success instead.
+  let frontmatter: string;
+  let deduped = false;
+  if (fs.existsSync(filePath)) {
+    const existing = fs.readFileSync(filePath, 'utf-8');
+    if (extractContentHash(existing) !== contentHash) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            success: false,
+            error: `File already exists with different content: ${filename}`,
+            file: sourceFileRel,
+            tip: 'Same-day learning with the same opening words (the first 50 chars become the filename slug). Reword the first line, or use oracle_supersede to replace the existing entry.'
+          }, null, 2)
+        }],
+        isError: true
+      };
+    }
+    frontmatter = existing;
+    deduped = true;
+  } else {
+    frontmatter = buildLearningMarkdown({
+      id,
+      pattern,
+      title,
+      concepts: conceptsList,
+      createdAt: now,
+      source,
+      project,
+    });
+    fs.writeFileSync(filePath, frontmatter, 'utf-8');
+  }
 
-  ctx.db.insert(oracleDocuments).values({
-    id,
-    type: 'learning',
-    sourceFile: sourceFileRel,
-    concepts: JSON.stringify(conceptsList),
-    createdAt: now.getTime(),
-    updatedAt: now.getTime(),
-    indexedAt: now.getTime(),
-    origin: null,
-    project,
-    createdBy: 'oracle_learn',
-  }).run();
-
-  // FTS5 has no unique constraint on id — delete-then-insert to be idempotent.
-  ctx.sqlite.prepare(`DELETE FROM oracle_fts WHERE id = ?`).run(id);
-  ctx.sqlite.prepare(`
-    INSERT INTO oracle_fts (id, content, concepts)
-    VALUES (?, ?, ?)
-  `).run(id, frontmatter, conceptsList.join(' '));
+  try {
+    writeLearningIndexRows(ctx.sqlite, ctx.db, {
+      id,
+      sourceFile: sourceFileRel,
+      markdown: frontmatter,
+      concepts: conceptsList,
+      project,
+      createdBy: 'oracle_learn',
+      now,
+    });
+  } catch (err) {
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          success: false,
+          error: `Index write failed: ${err instanceof Error ? err.message : String(err)}`,
+          file: sourceFileRel,
+          id,
+          fileWritten: true,
+          retrySafe: true,
+          tip: 'The learning file IS saved. Retry with the SAME pattern text — the retry repairs the index idempotently. Do NOT reword the pattern; that would create a duplicate entry.'
+        }, null, 2)
+      }],
+      isError: true
+    };
+  }
 
   // Vector indexing — two paths:
   //   - Default (env unset): inline embed via Ollama. Keeps DB + lancedb in
@@ -316,8 +348,9 @@ export async function handleLearn(ctx: ToolContext, input: OracleLearnInput): Pr
         file: sourceFileRel,
         id,
         embedding: embeddingStatus,
+        ...(deduped && { deduped: true }),
         ...(embeddingError && { embeddingError }),
-        message: `Pattern added to Oracle knowledge base${vaultRoot ? ' (vault)' : ''}${embeddingStatus === 'failed' ? ' — vector embedding failed, see server log' : ''}`
+        message: `Pattern added to Oracle knowledge base${vaultRoot ? ' (vault)' : ''}${deduped ? ' — already existed (idempotent retry), index repaired' : ''}${embeddingStatus === 'failed' ? ' — vector embedding failed, see server log' : ''}`
       }, null, 2)
     }]
   };
