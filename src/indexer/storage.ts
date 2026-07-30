@@ -8,12 +8,18 @@ import * as schema from '../db/schema.ts';
 import { oracleDocuments } from '../db/schema.ts';
 import type { VectorStoreAdapter } from '../vector/types.ts';
 import type { OracleDocument } from '../types.ts';
-import { ftsUpsert, ftsNeedsWrite } from '../db/fts-tables.ts';
+import { ftsUpsert, ftsNeedsWrite, ftsOptimize } from '../db/fts-tables.ts';
 
 /**
  * Store documents in SQLite + vector store
  * Uses Drizzle for type-safe inserts and sets createdBy: 'indexer'
  */
+/**
+ * Rewrites above this count trigger a segment merge. 500 is well above the
+ * handful a normal vault-sync writes, and well below a full reindex.
+ */
+const FTS_OPTIMIZE_THRESHOLD = 500;
+
 export async function storeDocuments(
   sqlite: Database,
   db: BunSQLiteDatabase<typeof schema>,
@@ -93,6 +99,17 @@ export async function storeDocuments(
     }
     sqlite.exec('COMMIT');
     console.log(`FTS: ${ftsWritten} written, ${documents.length - ftsWritten} unchanged (skipped re-tokenise)`);
+
+    // Merge segments after a write-heavy pass. FTS5 appends a new segment per
+    // batch and merges lazily, so a big reindex inflates the file with live-but-
+    // fragmented index data that VACUUM cannot reclaim (measured: 97 MB -> 149 MB
+    // after one full pass, back to 81 MB after optimize). Gated on volume because
+    // it costs ~7s — a 15-minute sync that wrote nothing must not pay for it.
+    if (ftsWritten >= FTS_OPTIMIZE_THRESHOLD) {
+      const t0 = Date.now();
+      ftsOptimize(sqlite);
+      console.log(`FTS: optimize after ${ftsWritten} writes (${Date.now() - t0}ms)`);
+    }
   } catch (e) {
     sqlite.exec('ROLLBACK');
     throw e;
