@@ -184,8 +184,20 @@ export function parseRetroFile(relativePath: string, content: string): OracleDoc
     const body = lines.slice(1).join('\n').trim();
     if (!body || body.length < 50) return;
 
-    const filename = path.basename(relativePath, '.md');
-    const id = `retro_${filename}_${index}`;
+    // Scope the id by full path, not basename.
+    //
+    // `retro_${basename}_${i}` collided across houses: PQ and AQ both keep
+    // ψ/memory/retrospectives/2026-07/15/19.41_queue-ops-park-....md, different
+    // content (sha256 38550bc7 vs 93929c23), and both produced the same id.
+    // The later write replaced the earlier one, so one house's retro vanished
+    // entirely — 80 of 435 retro files on disk had no row at all, and all 80
+    // were exactly the ones whose filename repeats in another house.
+    //
+    // Unlike the dedupe bug (which at least kept one copy of identical text),
+    // this destroyed content that differed. resonance (:42) and learning (:100)
+    // have always keyed on the full relative path — this was the one parser
+    // that did not, and the correct pattern sat 90 lines above it.
+    const id = `retro_${relativePath.replace(/\.md$/, '')}_${index}`;
     const extracted = extractConcepts(sectionTitle, body);
 
     documents.push({
