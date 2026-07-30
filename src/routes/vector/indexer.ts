@@ -16,6 +16,7 @@ import { Elysia, t } from 'elysia';
 import { getEmbeddingModels, getVectorStoreConfigByModel } from '../../vector/factory.ts';
 import { loadVectorIndexDocuments, type VectorIndexSource } from './indexer-source.ts';
 import { proxyVectorIndexer } from './indexer-proxy.ts';
+import { recordVectorOutcome } from '../../vector/run-marker.ts';
 import { localVectorOperations, type RebuildStrategy } from '../../server/vector-operations.ts';
 
 // ── In-memory status (no sqlite writes — avoids the disk I/O problem) ──
@@ -47,6 +48,25 @@ let stopRequestedJobId: string | null = null;
 
 
 export const rebuildVectorCollection = localVectorOperations.rebuildCollection.bind(localVectorOperations);
+
+/**
+ * Persist how the finished job ended, so the answer survives a restart.
+ *
+ * Only 'completed' counts as ok — 'stopped' and 'error' both mean the vector
+ * collection is not what the caller asked for, and a watchdog reading the marker
+ * should treat them the same way: embeddings are not fresh.
+ */
+function recordJobOutcome(): void {
+  const ok = currentJob.status === 'completed';
+  const models = currentJob.models?.join(',') || currentJob.model || 'unknown';
+  recordVectorOutcome(
+    ok ? 'ok' : 'skipped',
+    ok
+      ? `${currentJob.total} docs via ${models} (${currentJob.strategy ?? 'rebuild'}, source=${currentJob.source ?? 'auto'})`
+      : `job ${currentJob.status}: ${currentJob.error ?? 'unknown'} (at ${currentJob.current}/${currentJob.total})`,
+    'api',
+  );
+}
 
 // ── Endpoints ──────────────────────────────────────────────────────────
 
@@ -118,6 +138,17 @@ export const vectorIndexerEndpoints = new Elysia()
         currentJob.status = 'error';
         currentJob.error = e instanceof Error ? e.message : String(e);
         currentJob.completedAt = Date.now();
+      } finally {
+        // Leave the outcome on disk. currentJob lives in memory, so every server
+        // restart erases "when did embeddings last succeed?" — and this route is
+        // the path the every-3-hours cron uses, i.e. the unattended one where
+        // silence costs the most (found 2026-07-30, after two restarts left that
+        // question unanswerable while FTS looked perfectly fresh).
+        //
+        // In `finally` on purpose: it covers both branches above AND any exit
+        // path added later, so the next person doesn't have to remember to
+        // record it. The marker writer never throws.
+        recordJobOutcome();
       }
     })();
 

@@ -20,11 +20,10 @@
  * semantic embeddings just stay unchanged until the next successful run.
  */
 
-import fs from 'fs';
-import path from 'path';
 import { runOracleReindex } from './runner.ts';
 import { isVectorSectionEnabled, loadVectorConfig } from '../vector/config.ts';
 import { ORACLE_DATA_DIR } from '../config.ts';
+import { recordVectorOutcome, VECTOR_RUN_MARKER } from '../vector/run-marker.ts';
 
 // This CLI takes NO arguments — running it IS the action (a full reindex).
 // Two houses learned that the hard way five weeks apart (volt 2026-06-24,
@@ -43,37 +42,22 @@ if (import.meta.main && process.argv.slice(2).length > 0) {
   process.exit(1);
 }
 
-/** Where the last vector outcome is recorded — see recordVectorOutcome(). */
-const VECTOR_RUN_MARKER = path.join(ORACLE_DATA_DIR, 'vector-last-run.json');
-
 /**
- * Record how the vector step ended, so "skipped" stops being invisible.
- *
  * The BEST-EFFORT posture below is correct (a dead vector server must not fail
- * an FTS reindex that already succeeded), but it left a single console.warn as
- * the ONLY trace — and under cron nobody reads stdout. Result: FTS stayed fresh
- * while embeddings silently rotted for an unknown number of days (found
+ * an FTS reindex that already succeeded), but it once left a single console.warn
+ * as the ONLY trace — and under cron nobody reads stdout. Result: FTS stayed
+ * fresh while embeddings silently rotted for an unknown number of days (found
  * 2026-07-30: config pointed at a port nothing listened on).
  *
  * The fix is not "fail louder" — it is leaving a fact on disk that the watchdog
- * and dashboard can read. Never let this throw: it is diagnostics, not the job.
+ * and dashboard can read. That writer lives in ../vector/run-marker.ts and is
+ * shared with the HTTP route, because the cron path goes through the route, not
+ * through this CLI.
  */
-function recordVectorOutcome(outcome: 'ok' | 'skipped' | 'unknown', detail?: string): void {
-  try {
-    fs.mkdirSync(ORACLE_DATA_DIR, { recursive: true });
-    fs.writeFileSync(
-      VECTOR_RUN_MARKER,
-      JSON.stringify({ outcome, detail: detail?.slice(0, 400) ?? null, at: Date.now() }, null, 2),
-      'utf-8'
-    );
-  } catch {
-    // diagnostics must never break the run
-  }
-}
 
 /** One loud, greppable line + the marker — used by every non-ok exit path. */
 function warnVector(detail: string, hint?: string): void {
-  recordVectorOutcome('skipped', detail);
+  recordVectorOutcome('skipped', detail, 'cli');
   console.warn(
     `\n[Auto-Vector] ⚠️  VECTOR EMBEDDINGS NOT UPDATED — ${detail}\n` +
       `  FTS5 search is valid and fresh; semantic/vector results are STALE until a successful run.\n` +
@@ -170,7 +154,7 @@ export async function autoIndexVectors(): Promise<void> {
         unreachable = 0;
       } catch {
         if (++unreachable >= 3) {
-          recordVectorOutcome('unknown', 'vector server became unreachable mid-run');
+          recordVectorOutcome('unknown', 'vector server became unreachable mid-run', 'cli');
           console.warn(
             `\n[Auto-Vector] ⚠️  VECTOR STATE UNKNOWN — server became unreachable mid-run.\n` +
               `  FTS5 is valid; vector state may be PARTIAL (the rebuild swaps atomically, so it is\n` +
@@ -195,7 +179,7 @@ export async function autoIndexVectors(): Promise<void> {
       }
 
       if (status.status === 'completed') {
-        recordVectorOutcome('ok', `${status.total ?? '?'} docs via ${model} on :${port}`);
+        recordVectorOutcome('ok', `${status.total ?? '?'} docs via ${model} on :${port}`, 'cli');
         console.log('[Auto-Vector] embeddings complete!');
         return;
       }
