@@ -28,10 +28,14 @@ beforeEach(() => {
 afterEach(() => db.close());
 
 describe('initFtsTables', () => {
-  it('creates both tables, idempotently', () => {
-    initFtsTables(db); // second call must not throw or duplicate
+  it('creates both tables, idempotently, reporting zero deltas', () => {
+    const r = initFtsTables(db); // second call must not throw or duplicate
     expect(count(FTS_MAIN)).toBe(0);
     expect(count(FTS_TRI)).toBe(0);
+    // The returned deltas are logical doc counts. stmt.changes on an FTS5
+    // virtual table counts shadow-table ops (a 8,002-doc backfill reported
+    // 136,582) — this contract pins the honest number.
+    expect(r).toEqual({ healed: 0, pruned: 0 });
   });
 
   it('backfills the trigram table from an existing main table', () => {
@@ -67,7 +71,7 @@ describe('initFtsTables', () => {
     expect(count(FTS_MAIN)).toBe(2);
     expect(count(FTS_TRI)).toBe(1);
 
-    initFtsTables(db);
+    expect(initFtsTables(db)).toEqual({ healed: 1, pruned: 0 });
 
     expect(count(FTS_TRI)).toBe(2);
     // healed row must be trigram-searchable, not just counted
@@ -87,7 +91,7 @@ describe('initFtsTables', () => {
     ftsUpsert(db, 'ghost', 'deleted by old-code writer', 'c');
     // old-code delete touches main only
     db.prepare(`DELETE FROM ${FTS_MAIN} WHERE id = ?`).run('ghost');
-    initFtsTables(db);
+    expect(initFtsTables(db)).toEqual({ healed: 0, pruned: 1 });
     expect(count(FTS_TRI)).toBe(1);
     expect(ftsHasBoth(db, 'd1')).toBe(true);
   });

@@ -30,7 +30,7 @@ export const FTS_TRI = 'oracle_fts_tri';
  * main one when it is empty — first boot after this feature, or a manual drop.
  * Backfill measured at ~2s for the full corpus, acceptable at startup.
  */
-export function initFtsTables(sqlite: Database): void {
+export function initFtsTables(sqlite: Database): { healed: number; pruned: number } {
   sqlite.exec(`
     CREATE VIRTUAL TABLE IF NOT EXISTS ${FTS_MAIN} USING fts5(
       id UNINDEXED,
@@ -61,25 +61,37 @@ export function initFtsTables(sqlite: Database): void {
   // GROUP BY collapses duplicate ids in main (FTS5 has no UNIQUE on an
   // UNINDEXED column — see the 2026-04-16 drift) so healing copies one row
   // per id instead of re-importing the duplication.
+  // Deltas are measured by COUNTing before/after, NOT from stmt.changes —
+  // on an FTS5 virtual table sqlite3_changes() reports shadow-table row ops
+  // (a full 8,002-doc backfill logged "+136,582"), which made the heal log
+  // lie by ~17x. This log line is the operator's drift signal; a number that
+  // certifies itself is worse than no number.
   const t0 = Date.now();
-  const healed = sqlite.prepare(`
+  const triBefore = (sqlite.prepare(`SELECT count(*) n FROM ${FTS_TRI}`).get() as { n: number }).n;
+  sqlite.prepare(`
     INSERT INTO ${FTS_TRI} (id, content, concepts)
     SELECT id, MAX(content), MAX(concepts) FROM ${FTS_MAIN}
     WHERE id NOT IN (SELECT id FROM ${FTS_TRI})
     GROUP BY id
   `).run();
+  const afterHeal = (sqlite.prepare(`SELECT count(*) n FROM ${FTS_TRI}`).get() as { n: number }).n;
   // And the reverse direction: ids main has deleted but tri still holds
   // (an old-code writer deletes main-only, since tri did not exist for it).
   // Search never shows these ghosts — the JOIN on oracle_documents filters
   // them — but they would keep fts_tri_status stuck on "drift" forever,
   // which trains people to ignore the one number meant to catch real drift.
-  const pruned = sqlite.prepare(`
+  sqlite.prepare(`
     DELETE FROM ${FTS_TRI}
     WHERE id NOT IN (SELECT id FROM ${FTS_MAIN})
   `).run();
-  if (healed.changes > 0 || pruned.changes > 0) {
-    console.error(`[fts] healed ${FTS_TRI}: +${healed.changes} missing, -${pruned.changes} orphaned vs ${FTS_MAIN} (${Date.now() - t0}ms)`);
+  const afterPrune = (sqlite.prepare(`SELECT count(*) n FROM ${FTS_TRI}`).get() as { n: number }).n;
+
+  const healed = afterHeal - triBefore;
+  const pruned = afterHeal - afterPrune;
+  if (healed > 0 || pruned > 0) {
+    console.error(`[fts] healed ${FTS_TRI}: +${healed} missing, -${pruned} orphaned vs ${FTS_MAIN} (${Date.now() - t0}ms)`);
   }
+  return { healed, pruned };
 }
 
 /**
