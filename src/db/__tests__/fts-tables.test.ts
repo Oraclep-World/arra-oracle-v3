@@ -57,6 +57,40 @@ describe('initFtsTables', () => {
     initFtsTables(db); // must not duplicate d1 in tri
     expect(count(FTS_TRI)).toBe(1);
   });
+
+  it('self-heals partial drift on every boot — the rollout-window case', () => {
+    // Reproduce what happened on the real brain within minutes of deploy:
+    // tri exists with old rows, then an old-code writer adds to main only.
+    ftsUpsert(db, 'd1', 'indexed by new code', 'c');
+    db.prepare(`INSERT INTO ${FTS_MAIN} (id, content, concepts) VALUES (?, ?, ?)`)
+      .run('d2', 'written by old-code writer สมองกลาง', 'c');
+    expect(count(FTS_MAIN)).toBe(2);
+    expect(count(FTS_TRI)).toBe(1);
+
+    initFtsTables(db);
+
+    expect(count(FTS_TRI)).toBe(2);
+    // healed row must be trigram-searchable, not just counted
+    const hit = db.prepare(`SELECT id FROM ${FTS_TRI} WHERE ${FTS_TRI} MATCH ?`).all('"องกลา"');
+    expect(hit.map((r: any) => r.id)).toEqual(['d2']);
+  });
+
+  it('healing collapses duplicate ids in main instead of importing the duplication', () => {
+    db.prepare(`INSERT INTO ${FTS_MAIN} (id, content, concepts) VALUES (?, ?, ?)`).run('dup', 'a', 'c');
+    db.prepare(`INSERT INTO ${FTS_MAIN} (id, content, concepts) VALUES (?, ?, ?)`).run('dup', 'b', 'c');
+    initFtsTables(db);
+    expect((db.prepare(`SELECT count(*) n FROM ${FTS_TRI} WHERE id = ?`).get('dup') as any).n).toBe(1);
+  });
+
+  it('prunes tri orphans whose id main no longer has', () => {
+    ftsUpsert(db, 'd1', 'stays', 'c');
+    ftsUpsert(db, 'ghost', 'deleted by old-code writer', 'c');
+    // old-code delete touches main only
+    db.prepare(`DELETE FROM ${FTS_MAIN} WHERE id = ?`).run('ghost');
+    initFtsTables(db);
+    expect(count(FTS_TRI)).toBe(1);
+    expect(ftsHasBoth(db, 'd1')).toBe(true);
+  });
 });
 
 describe('ftsUpsert', () => {

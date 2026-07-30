@@ -48,15 +48,37 @@ export function initFtsTables(sqlite: Database): void {
     )
   `);
 
-  const mainCount = (sqlite.prepare(`SELECT count(*) n FROM ${FTS_MAIN}`).get() as { n: number }).n;
-  const triCount = (sqlite.prepare(`SELECT count(*) n FROM ${FTS_TRI}`).get() as { n: number }).n;
-  if (triCount === 0 && mainCount > 0) {
-    const t0 = Date.now();
-    sqlite.exec(`
-      INSERT INTO ${FTS_TRI} (id, content, concepts)
-      SELECT id, content, concepts FROM ${FTS_MAIN}
-    `);
-    console.error(`[fts] backfilled ${FTS_TRI} with ${mainCount} docs in ${Date.now() - t0}ms`);
+  // Self-heal: copy any id present in main but missing from tri.
+  //
+  // A backfill-only-when-empty guard proved insufficient within MINUTES of
+  // deploy (2026-07-30): during the rollout window, old-code writers (MCP
+  // stdio processes spawned before the change, plus the pre-restart HTTP
+  // server) kept writing main-only while a new-code process had already
+  // created tri → 8,002 vs 7,963 on the real brain. Mixed code vintages
+  // writing one DB is the norm here, not an edge case, so healing has to be
+  // an every-boot invariant, not a first-boot event.
+  //
+  // GROUP BY collapses duplicate ids in main (FTS5 has no UNIQUE on an
+  // UNINDEXED column — see the 2026-04-16 drift) so healing copies one row
+  // per id instead of re-importing the duplication.
+  const t0 = Date.now();
+  const healed = sqlite.prepare(`
+    INSERT INTO ${FTS_TRI} (id, content, concepts)
+    SELECT id, MAX(content), MAX(concepts) FROM ${FTS_MAIN}
+    WHERE id NOT IN (SELECT id FROM ${FTS_TRI})
+    GROUP BY id
+  `).run();
+  // And the reverse direction: ids main has deleted but tri still holds
+  // (an old-code writer deletes main-only, since tri did not exist for it).
+  // Search never shows these ghosts — the JOIN on oracle_documents filters
+  // them — but they would keep fts_tri_status stuck on "drift" forever,
+  // which trains people to ignore the one number meant to catch real drift.
+  const pruned = sqlite.prepare(`
+    DELETE FROM ${FTS_TRI}
+    WHERE id NOT IN (SELECT id FROM ${FTS_MAIN})
+  `).run();
+  if (healed.changes > 0 || pruned.changes > 0) {
+    console.error(`[fts] healed ${FTS_TRI}: +${healed.changes} missing, -${pruned.changes} orphaned vs ${FTS_MAIN} (${Date.now() - t0}ms)`);
   }
 }
 
