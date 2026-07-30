@@ -21,6 +21,48 @@ export class ChromaDBInternalEmbeddings implements EmbeddingProvider {
 }
 
 /**
+ * Dimensions we know statically, keyed by Ollama model name.
+ *
+ * Exported so tests can cross-check this hand-written table against the byte
+ * length Ollama actually returns. Asserting a vector's length against itself
+ * proves nothing; asserting it against this table catches the day a model tag
+ * starts returning a different width.
+ */
+export const KNOWN_DIMS: Record<string, number> = {
+  'nomic-embed-text': 768,
+  'qwen3-embedding': 1024,                             // 0.6B variant (default tag)
+  'qwen3-embedding:0.6b': 1024,
+  'qwen3-embedding:4b': 2560,
+  'qwen3-embedding:8b': 4096,
+  'bge-m3': 1024,
+  'mxbai-embed-large': 1024,
+  'all-minilm': 384,
+  'qllama/multilingual-e5-large-instruct': 1024,
+  'qllama/multilingual-e5-large-instruct:latest': 1024,
+  'multilingual-e5-large': 1024,
+  'multilingual-e5-large-instruct': 1024,
+  'snowflake-arctic-embed2': 1024,
+};
+
+/**
+ * Look up a model's dimension, tolerating Ollama's `:latest` tag.
+ *
+ * `ollama list` prints `bge-m3:latest`, so that is the name people copy into
+ * config — but the table above is keyed `bge-m3`. Before this normalisation a
+ * pasted `:latest` name silently missed the table and fell back to 768 while
+ * the model really returns 1024, and adapters then created a 768-wide column.
+ *
+ * Returns 0 for genuinely unknown models: callers must probe (see
+ * ensureDimensions) rather than guess a width.
+ */
+export function lookupKnownDims(model: string): number {
+  const exact = KNOWN_DIMS[model];
+  if (exact) return exact;
+  const bare = model.replace(/:latest$/, '');
+  return KNOWN_DIMS[bare] ?? 0;
+}
+
+/**
  * Ollama local embeddings
  */
 export class OllamaEmbeddings implements EmbeddingProvider {
@@ -42,24 +84,38 @@ export class OllamaEmbeddings implements EmbeddingProvider {
     this.batchSize = positiveInt(process.env.ORACLE_EMBED_BATCH_SIZE, 50);
     this.timeoutMs = positiveInt(process.env.ORACLE_EMBED_TIMEOUT_MS, 30_000);
     // Known model dimensions (fallback before auto-detect).
-    // For unknown models, set to 0 → adapters MUST probe via embed() before
-    // creating columns (see #qwen3-dim-fallback issue).
-    const KNOWN_DIMS: Record<string, number> = {
-      'nomic-embed-text': 768,
-      'qwen3-embedding': 1024,                             // 0.6B variant (default tag)
-      'qwen3-embedding:0.6b': 1024,
-      'qwen3-embedding:4b': 2560,
-      'qwen3-embedding:8b': 4096,
-      'bge-m3': 1024,
-      'mxbai-embed-large': 1024,
-      'all-minilm': 384,
-      'qllama/multilingual-e5-large-instruct': 1024,
-      'qllama/multilingual-e5-large-instruct:latest': 1024,
-      'multilingual-e5-large': 1024,
-      'multilingual-e5-large-instruct': 1024,
-      'snowflake-arctic-embed2': 1024,
-    };
-    this.dimensions = KNOWN_DIMS[this.model] || 768;
+    // For unknown models this is 0 → adapters MUST probe via ensureDimensions()
+    // before creating columns (see #qwen3-dim-fallback issue). The old code said
+    // `|| 768` here, which contradicted this comment and made every unknown
+    // model quietly claim nomic's width.
+    this.dimensions = lookupKnownDims(this.model);
+  }
+
+  /**
+   * Resolve the true dimension before anyone creates a fixed-width column.
+   *
+   * Cheap no-op when the model is in KNOWN_DIMS. For unknown models it costs one
+   * tiny embed call — the only honest way to learn the width, since the table
+   * cannot know about models that did not exist when it was written.
+   *
+   * Adapters call this in ensureCollection(); embed() also auto-detects, but
+   * that happens *after* the column already exists, which is too late.
+   */
+  async ensureDimensions(): Promise<number> {
+    if (this.dimensions > 0) return this.dimensions;
+
+    const probe = await this.embed(['dimension probe']);
+    const width = probe[0]?.length ?? 0;
+    if (width <= 0) {
+      throw new Error(
+        `Cannot determine embedding width for Ollama model '${this.model}': ` +
+        `it is not in KNOWN_DIMS and a probe embed returned no vector. ` +
+        `Add it to KNOWN_DIMS in src/vector/embeddings.ts or fix the model name.`
+      );
+    }
+    this.dimensions = width;
+    this._dimensionsDetected = true;
+    return width;
   }
 
   async embed(texts: string[], type?: EmbedType): Promise<number[][]> {

@@ -2,13 +2,27 @@
  * Vector Store Adapter Integration Tests
  *
  * Tests all available adapters against the VectorStoreAdapter interface.
- * Requires: Ollama running with nomic-embed-text for sqlite-vec tests.
+ * Requires: Ollama running *and holding the configured embedding model*.
  * ChromaDB adapter tested if chroma-mcp available.
+ *
+ * Two traps this file walked into before, both worth naming:
+ *
+ *  1. It asserted a literal 768 (nomic's width). When .env switched
+ *     ORACLE_EMBEDDING_MODEL to bge-m3 (1024) these assertions became wrong,
+ *     and nobody noticed because the suite never ran this folder. Widths are
+ *     now looked up in KNOWN_DIMS — the hand-written table — and compared
+ *     against the bytes Ollama returns. Two independent sources; asserting a
+ *     vector's length against itself would prove nothing.
+ *
+ *  2. The skip guard asked "is Ollama up?" when what the tests need is "is this
+ *     *model* pulled?". Ollama answered 200 on /api/tags while returning 404 for
+ *     the model, so tests failed red with nothing actually broken. The guard now
+ *     checks the model and says which one is missing.
  */
 
 import { describe, test, expect, afterAll } from 'bun:test';
 import { createVectorStore } from '../factory.ts';
-import { createEmbeddingProvider, OllamaEmbeddings } from '../embeddings.ts';
+import { createEmbeddingProvider, OllamaEmbeddings, lookupKnownDims } from '../embeddings.ts';
 import { SqliteVecAdapter } from '../adapters/sqlite-vec.ts';
 import { ChromaMcpAdapter } from '../adapters/chroma-mcp.ts';
 import { LanceDBAdapter } from '../adapters/lancedb.ts';
@@ -89,6 +103,60 @@ async function isOllamaAvailable(): Promise<boolean> {
   }
 }
 
+/**
+ * The model createVectorStore() will hand to Ollama, mirroring factory.ts's
+ * precedence (config → ORACLE_EMBEDDING_MODEL → OllamaEmbeddings' own default).
+ * Read from env rather than from a built store so the expectation is derived
+ * from configuration, not from the object under test.
+ */
+const CONFIGURED_OLLAMA_MODEL = process.env.ORACLE_EMBEDDING_MODEL || 'nomic-embed-text';
+
+/**
+ * Expected vector width for the configured model, from the hand-written table.
+ *
+ * 0 means the table has never heard of this model. Tests must fail loudly in
+ * that case instead of asserting `toHaveLength(0)` — a zero that quietly matches
+ * nothing is the same shape of bug as the `|| 768` fallback this file exposed.
+ */
+const EXPECTED_DIMS = lookupKnownDims(CONFIGURED_OLLAMA_MODEL);
+
+/**
+ * Is the model actually pulled? `/api/tags` returning 200 only proves the daemon
+ * is up. Ollama reports names with an explicit tag (`bge-m3:latest`) while config
+ * usually omits it, so compare both ways.
+ */
+async function isOllamaModelAvailable(model: string): Promise<boolean> {
+  try {
+    const res = await fetch('http://localhost:11434/api/tags');
+    if (!res.ok) return false;
+    const body = await res.json() as { models?: Array<{ name?: string }> };
+    const names = (body.models ?? []).map(m => m.name ?? '');
+    const bare = (n: string) => n.replace(/:latest$/, '');
+    return names.some(n => n === model || bare(n) === bare(model));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Gate a suite on Ollama, logging *which* layer is missing.
+ *
+ * "Ollama not available" was the old message for both a dead daemon and a
+ * missing model, which sent us hunting the wrong layer. One line of extra
+ * plumbing buys a skip reason you can act on.
+ */
+async function ollamaReady(model: string): Promise<boolean> {
+  if (!await isOllamaAvailable()) {
+    console.log('  [SKIP] Ollama daemon not reachable at localhost:11434');
+    return false;
+  }
+  if (!await isOllamaModelAvailable(model)) {
+    console.log(`  [SKIP] Ollama is up but model '${model}' is not pulled (ollama pull ${model})`);
+    return false;
+  }
+  return true;
+}
+
 // ============================================================================
 // Embedding Provider Tests
 // ============================================================================
@@ -102,20 +170,22 @@ describe('EmbeddingProvider', () => {
   });
 
   test('createEmbeddingProvider: ollama returns vectors', async () => {
-    const available = await isOllamaAvailable();
-    if (!available) {
-      console.log('  [SKIP] Ollama not available');
+    if (!await isOllamaModelAvailable(CONFIGURED_OLLAMA_MODEL)) {
+      console.log(`  [SKIP] Ollama model '${CONFIGURED_OLLAMA_MODEL}' not pulled`);
       return;
     }
 
-    const provider = createEmbeddingProvider('ollama');
+    // The table must know this model, or the width assertions below are vacuous.
+    expect(EXPECTED_DIMS).toBeGreaterThan(0);
+
+    const provider = createEmbeddingProvider('ollama', CONFIGURED_OLLAMA_MODEL);
     expect(provider.name).toBe('ollama');
-    expect(provider.dimensions).toBe(768);
+    expect(provider.dimensions).toBe(EXPECTED_DIMS);
 
     const vectors = await provider.embed(['hello world', 'test embedding']);
     expect(vectors).toHaveLength(2);
-    expect(vectors[0]).toHaveLength(768);
-    expect(vectors[1]).toHaveLength(768);
+    expect(vectors[0]).toHaveLength(EXPECTED_DIMS);
+    expect(vectors[1]).toHaveLength(EXPECTED_DIMS);
 
     // Vectors should be different
     const diff = vectors[0].some((v, i) => v !== vectors[1][i]);
@@ -175,7 +245,7 @@ describe.skipIf(!SQLITE_VEC_AVAILABLE)('SqliteVecAdapter + Ollama', () => {
 
   // Setup — needs both Ollama AND sqlite-vec extension
   const setup = async () => {
-    available = await isOllamaAvailable();
+    available = await ollamaReady(CONFIGURED_OLLAMA_MODEL);
     if (!available) return;
 
     tmpDb = path.join(os.tmpdir(), `oracle-vec-test-${Date.now()}.db`);
@@ -279,7 +349,8 @@ describe.skipIf(!SQLITE_VEC_AVAILABLE)('SqliteVecAdapter + Ollama', () => {
 
     expect(all.ids).toHaveLength(5);
     expect(all.embeddings).toHaveLength(5);
-    expect(all.embeddings[0]).toHaveLength(768); // nomic-embed-text dims
+    expect(EXPECTED_DIMS).toBeGreaterThan(0); // table must know the model
+    expect(all.embeddings[0]).toHaveLength(EXPECTED_DIMS);
     expect(all.metadatas).toHaveLength(5);
   });
 
@@ -368,7 +439,7 @@ describe('LanceDBAdapter + Ollama', () => {
   let available = false;
 
   const setup = async () => {
-    available = await isOllamaAvailable();
+    available = await ollamaReady(CONFIGURED_OLLAMA_MODEL);
     if (!available) return;
 
     tmpDir = path.join(os.tmpdir(), `oracle-lance-test-${Date.now()}`);
@@ -449,7 +520,8 @@ describe('LanceDBAdapter + Ollama', () => {
 
     expect(all.ids).toHaveLength(5);
     expect(all.embeddings).toHaveLength(5);
-    expect(all.embeddings[0]).toHaveLength(768);
+    expect(EXPECTED_DIMS).toBeGreaterThan(0); // table must know the model
+    expect(all.embeddings[0]).toHaveLength(EXPECTED_DIMS);
     expect(all.metadatas).toHaveLength(5);
   });
 
@@ -481,7 +553,13 @@ describe('QdrantAdapter + Ollama', () => {
   let available = false;
 
   const setup = async () => {
-    const [ollama, qdrant] = await Promise.all([isOllamaAvailable(), isQdrantAvailable()]);
+    // Same reasoning as the other suites: name the missing layer, and check the
+    // model rather than just the daemon.
+    const [ollama, qdrant] = await Promise.all([
+      ollamaReady(CONFIGURED_OLLAMA_MODEL),
+      isQdrantAvailable(),
+    ]);
+    if (!qdrant) console.log('  [SKIP] Qdrant not reachable');
     available = ollama && qdrant;
     if (!available) return;
 

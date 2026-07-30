@@ -12,6 +12,7 @@
  */
 
 import type { VectorStoreAdapter, VectorDocument, VectorQueryResult, EmbeddingProvider, EmbedType } from '../types.ts';
+import { resolveDimensions } from '../resolve-dimensions.ts';
 
 const CF_MODEL = '@cf/baai/bge-m3';
 const CF_DIMENSIONS = 1024;
@@ -151,7 +152,9 @@ export class CloudflareVectorizeAdapter implements VectorStoreAdapter {
     try {
       await this.cfApi('');
     } catch {
-      // Try to create the index
+      // Try to create the index. A Vectorize index's dimension is immutable, so
+      // resolve the width rather than trusting whatever the embedder guessed.
+      const dims = await resolveDimensions(this.embedder, '[CF Vectorize]');
       const createUrl = `https://api.cloudflare.com/client/v4/accounts/${this.accountId}/vectorize/v2/indexes`;
       const response = await fetch(createUrl, {
         method: 'POST',
@@ -162,7 +165,7 @@ export class CloudflareVectorizeAdapter implements VectorStoreAdapter {
         body: JSON.stringify({
           name: this.indexName,
           config: {
-            dimensions: this.embedder.dimensions,
+            dimensions: dims,
             metric: 'cosine',
           },
         }),

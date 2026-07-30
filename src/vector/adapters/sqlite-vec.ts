@@ -9,6 +9,7 @@
 
 import { Database } from 'bun:sqlite';
 import type { VectorStoreAdapter, VectorDocument, VectorQueryResult, EmbeddingProvider } from '../types.ts';
+import { resolveDimensions } from '../resolve-dimensions.ts';
 
 /** Convert number[] to Float32Array binary blob for sqlite-vec */
 function toBlob(vec: number[]): Buffer {
@@ -84,7 +85,8 @@ export class SqliteVecAdapter implements VectorStoreAdapter {
   async ensureCollection(): Promise<void> {
     if (!this.db) throw new Error('sqlite-vec not connected');
 
-    const dims = this.embedder.dimensions;
+    // vec0 fixes the column width at CREATE time — resolve it, never guess.
+    const dims = await resolveDimensions(this.embedder, '[sqlite-vec]');
 
     // Metadata table (id, document text, metadata JSON)
     this.db.exec(`

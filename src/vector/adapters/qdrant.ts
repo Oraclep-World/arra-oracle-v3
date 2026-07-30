@@ -6,6 +6,7 @@
  */
 
 import type { VectorStoreAdapter, VectorDocument, VectorQueryResult, EmbeddingProvider } from '../types.ts';
+import { resolveDimensions } from '../resolve-dimensions.ts';
 
 export class QdrantAdapter implements VectorStoreAdapter {
   readonly name = 'qdrant';
@@ -49,9 +50,10 @@ export class QdrantAdapter implements VectorStoreAdapter {
     try {
       await this.client.getCollection(this.collectionName);
     } catch {
+      const dims = await resolveDimensions(this.embedder, '[Qdrant]');
       await this.client.createCollection(this.collectionName, {
         vectors: {
-          size: this.embedder.dimensions,
+          size: dims,
           distance: 'Cosine',
         },
       });

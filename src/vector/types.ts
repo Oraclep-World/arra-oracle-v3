@@ -67,6 +67,16 @@ export interface EmbeddingProvider {
   readonly name: string;
   readonly dimensions: number;
   embed(texts: string[], type?: EmbedType): Promise<number[][]>;
+
+  /**
+   * Resolve the true vector width before a fixed-width column is created.
+   *
+   * Optional: providers with a statically known width (ChromaDB internal,
+   * Cloudflare AI) can omit it. Providers whose width depends on a runtime
+   * model name implement it, and every adapter awaits it in ensureCollection()
+   * — a column created from a guessed width is silently wrong forever.
+   */
+  ensureDimensions?(): Promise<number>;
 }
 
 export type VectorDBType = 'chroma' | 'sqlite-vec' | 'lancedb' | 'qdrant' | 'cloudflare-vectorize';

@@ -6,6 +6,7 @@
  */
 
 import type { VectorStoreAdapter, VectorDocument, VectorQueryResult, EmbeddingProvider } from '../types.ts';
+import { resolveDimensions } from '../resolve-dimensions.ts';
 
 export class LanceDBAdapter implements VectorStoreAdapter {
   readonly name = 'lancedb';
@@ -53,8 +54,10 @@ export class LanceDBAdapter implements VectorStoreAdapter {
     if (tableNames.includes(this.collectionName)) {
       this.table = await this.db.openTable(this.collectionName);
     } else {
-      // Create with a schema-defining dummy row, then delete it
-      const dims = this.embedder.dimensions;
+      // Create with a schema-defining dummy row, then delete it.
+      // The width is baked into the table schema here, so resolve it for real
+      // first — a guessed width cannot be corrected later without a rebuild.
+      const dims = await resolveDimensions(this.embedder, '[LanceDB]');
       this.table = await this.db.createTable(this.collectionName, [{
         id: '__init__',
         text: '',
