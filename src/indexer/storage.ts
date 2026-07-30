@@ -8,6 +8,7 @@ import * as schema from '../db/schema.ts';
 import { oracleDocuments } from '../db/schema.ts';
 import type { VectorStoreAdapter } from '../vector/types.ts';
 import type { OracleDocument } from '../types.ts';
+import { ftsUpsert } from '../db/fts-tables.ts';
 
 /**
  * Store documents in SQLite + vector store
@@ -23,16 +24,9 @@ export async function storeDocuments(
 ): Promise<void> {
   const now = Date.now();
 
-  // Prepare FTS statements. FTS5 virtual tables have no UNIQUE constraint on
-  // the id column (it's UNINDEXED), so INSERT OR REPLACE doesn't dedupe —
-  // every reindex accumulates duplicates. Delete-then-insert instead.
-  // (Drift discovered 2026-04-16: oracle_fts had 1268 rows for 141 unique ids
-  // after 9 reindex passes.)
-  const deleteFts = sqlite.prepare(`DELETE FROM oracle_fts WHERE id = ?`);
-  const insertFts = sqlite.prepare(`
-    INSERT INTO oracle_fts (id, content, concepts)
-    VALUES (?, ?, ?)
-  `);
+  // FTS writes go through ftsUpsert — one writer for both keyword tables
+  // (unicode61 + trigram). The delete-then-insert dedupe rationale and the
+  // 2026-04-16 drift story live in src/db/fts-tables.ts.
 
   // Prepare for vector store
   const ids: string[] = [];
@@ -72,14 +66,8 @@ export async function storeDocuments(
         })
         .run();
 
-      // SQLite FTS (raw SQL required for FTS5): delete then insert to avoid
-      // duplicates across re-index runs.
-      deleteFts.run(doc.id);
-      insertFts.run(
-        doc.id,
-        doc.content,
-        doc.concepts.join(' ')
-      );
+      // SQLite FTS (raw SQL required for FTS5): both keyword tables, idempotent.
+      ftsUpsert(sqlite, doc.id, doc.content, doc.concepts.join(' '));
 
       // Vector store metadata (must be primitives, not arrays)
       ids.push(doc.id);

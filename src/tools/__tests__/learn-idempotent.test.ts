@@ -47,6 +47,7 @@ CREATE TABLE oracle_documents (
   created_by TEXT
 );
 CREATE VIRTUAL TABLE oracle_fts USING fts5(id UNINDEXED, content, concepts, tokenize='porter unicode61');
+CREATE VIRTUAL TABLE oracle_fts_tri USING fts5(id UNINDEXED, content, concepts, tokenize='trigram');
 `;
 
 const ORIGINAL_REPO_ROOT = process.env.ORACLE_REPO_ROOT;

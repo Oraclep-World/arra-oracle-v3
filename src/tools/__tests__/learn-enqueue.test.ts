@@ -39,6 +39,7 @@ CREATE TABLE oracle_documents (
   created_by TEXT
 );
 CREATE VIRTUAL TABLE oracle_fts USING fts5(id UNINDEXED, content, concepts, tokenize='porter unicode61');
+CREATE VIRTUAL TABLE oracle_fts_tri USING fts5(id UNINDEXED, content, concepts, tokenize='trigram');
 CREATE TABLE indexing_jobs (
   id TEXT PRIMARY KEY,
   doc_id TEXT NOT NULL,

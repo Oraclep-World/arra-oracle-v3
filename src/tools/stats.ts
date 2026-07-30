@@ -35,6 +35,14 @@ export async function handleStats(ctx: ToolContext, _input: OracleStatsInput): P
   }
 
   const ftsCount = ctx.sqlite.prepare('SELECT COUNT(*) as count FROM oracle_fts').get() as { count: number };
+  // Trigram twin — counts must track oracle_fts exactly. Exposing both is the
+  // cheap drift detector: two indexes that disagree are invisible from search
+  // results alone (the merge hides the gap). Table may not exist on a DB that
+  // predates the feature and hasn't been through initFts5 yet.
+  let ftsTriCount = -1;
+  try {
+    ftsTriCount = (ctx.sqlite.prepare('SELECT COUNT(*) as count FROM oracle_fts_tri').get() as { count: number }).count;
+  } catch { /* pre-trigram DB */ }
 
   const lastIndexed = ctx.db.select({
     lastIndexed: sql<number | null>`MAX(indexed_at)`,
@@ -66,6 +74,10 @@ export async function handleStats(ctx: ToolContext, _input: OracleStatsInput): P
         total_documents: totalDocs,
         by_type: byType,
         fts_indexed: ftsCount.count,
+        fts_tri_indexed: ftsTriCount,
+        fts_tri_status: ftsTriCount === -1 ? 'missing'
+          : ftsTriCount === ftsCount.count ? 'in-sync'
+          : `drift (${ftsTriCount} vs ${ftsCount.count})`,
         unique_concepts: uniqueConcepts.size,
         last_indexed: lastIndexed?.lastIndexed
           ? new Date(lastIndexed.lastIndexed).toISOString()

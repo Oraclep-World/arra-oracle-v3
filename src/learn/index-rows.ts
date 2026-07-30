@@ -22,6 +22,7 @@ import type { BunSQLiteDatabase } from 'drizzle-orm/bun-sqlite';
 import type * as schema from '../db/schema.ts';
 import { oracleDocuments } from '../db/schema.ts';
 import { isDbLockError } from '../db/errors.ts';
+import { ftsUpsert, ftsHasBoth } from '../db/fts-tables.ts';
 import { ORACLE_DATA_DIR } from '../config.ts';
 
 /**
@@ -123,12 +124,8 @@ export function writeLearningIndexRows(
       },
     }).run();
 
-    // FTS5 has no unique constraint on id — delete-then-insert to be idempotent.
-    sqlite.prepare(`DELETE FROM oracle_fts WHERE id = ?`).run(rows.id);
-    sqlite.prepare(`
-      INSERT INTO oracle_fts (id, content, concepts)
-      VALUES (?, ?, ?)
-    `).run(rows.id, rows.markdown, rows.concepts.join(' '));
+    // Both keyword tables, idempotent — see src/db/fts-tables.ts.
+    ftsUpsert(sqlite, rows.id, rows.markdown, rows.concepts.join(' '));
   });
 
   try {
@@ -140,8 +137,9 @@ export function writeLearningIndexRows(
     // already committed our rows. Only fail when they are truly absent.
     try {
       const doc = sqlite.prepare(`SELECT 1 FROM oracle_documents WHERE id = ?`).get(rows.id);
-      const fts = sqlite.prepare(`SELECT 1 FROM oracle_fts WHERE id = ?`).get(rows.id);
-      if (doc && fts) return 'verified-after-lock-error';
+      // "committed" must mean committed to BOTH keyword tables — verifying only
+      // one would bless a half-write and let the indexes drift silently.
+      if (doc && ftsHasBoth(sqlite, rows.id)) return 'verified-after-lock-error';
     } catch {
       // reads locked too — fall through to the original error
     }

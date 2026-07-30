@@ -15,23 +15,22 @@ import path from 'path';
 import fs from 'fs';
 import * as schema from './schema.ts';
 import { DB_PATH, ORACLE_DATA_DIR } from '../config.ts';
+import { initFtsTables } from './fts-tables.ts';
 
 // Migrations folder (relative to this file)
 const MIGRATIONS_FOLDER = path.join(import.meta.dirname || __dirname, 'migrations');
 
 /**
- * Initialize FTS5 virtual table (must use raw SQL)
+ * Initialize FTS5 virtual tables (must use raw SQL)
  * Drizzle doesn't manage FTS5 — this is idempotent.
+ *
+ * Since 2026-07-30 this creates TWO tables (unicode61 + trigram) and backfills
+ * the trigram one on first boot — see src/db/fts-tables.ts for the measured
+ * reasoning. Kept under the old name so every existing caller (server startup,
+ * indexer, tests) gets the new table without changing a line.
  */
 export function initFts5(sqliteDb: Database): void {
-  sqliteDb.exec(`
-    CREATE VIRTUAL TABLE IF NOT EXISTS oracle_fts USING fts5(
-      id UNINDEXED,
-      content,
-      concepts,
-      tokenize='porter unicode61'
-    )
-  `);
+  initFtsTables(sqliteDb);
 }
 
 /**

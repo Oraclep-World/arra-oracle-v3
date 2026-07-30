@@ -15,6 +15,7 @@ import type { SearchResult, SearchResponse } from './types.ts';
 import { ensureVectorStoreConnected, EMBEDDING_MODELS, getVectorStoreConfigByModel } from '../vector/factory.ts';
 import { localVectorOperations } from './vector-operations.ts';
 import { detectProject } from './project-detect.ts';
+import { trigramMatchQuery } from '../db/fts-tables.ts';
 import { coerceConcepts } from '../tools/learn.ts';
 import { createVectorProxy } from './vector-proxy.ts';
 import { buildLearningMarkdown, dateSlug, learningContentHash, extractContentHash } from '../learn/markdown.ts';
@@ -142,63 +143,73 @@ export async function handleSearch(
     : '1=1';
   const projectParams = resolvedProject ? [resolvedProject] : [];
 
-  // FTS5 search must use raw SQL (Drizzle doesn't support virtual tables)
+  // FTS5 search must use raw SQL (Drizzle doesn't support virtual tables).
+  //
+  // Two keyword tables, both queried, merged by id (see src/db/fts-tables.ts):
+  //   oracle_fts (unicode61) — only table that serves tokens < 3 chars (PQ, jq)
+  //   oracle_fts_tri (trigram) — Thai recall 26% → 100% on real logged queries.
+  // This HTTP path is where real traffic flows (MCP proxies here), so the
+  // trigram leg matters most in this file.
   if (effectiveMode !== 'vector') {
-    if (type === 'all') {
+    const typeCond = type === 'all' ? '' : 'AND d.type = ?';
+    const typeParams = type === 'all' ? [] : [type];
+
+    const keywordLeg = (table: string, match: string): { rows: any[]; total: number } => {
       const countStmt = sqlite.prepare(`
         SELECT COUNT(*) as total
-        FROM oracle_fts f
+        FROM ${table} f
         JOIN oracle_documents d ON f.id = d.id
-        WHERE oracle_fts MATCH ? AND ${projectFilter}
+        WHERE ${table} MATCH ? ${typeCond} AND ${projectFilter}
       `);
-      ftsTotal = (runFtsGet(countStmt, [ftsQuery, ...projectParams]) as { total: number } | null)?.total ?? 0;
+      const total = (runFtsGet(countStmt, [match, ...typeParams, ...projectParams]) as { total: number } | null)?.total ?? 0;
 
       const stmt = sqlite.prepare(`
         SELECT f.id, f.content, d.type, d.source_file, d.concepts, d.project, rank as score
-        FROM oracle_fts f
+        FROM ${table} f
         JOIN oracle_documents d ON f.id = d.id
-        WHERE oracle_fts MATCH ? AND ${projectFilter}
+        WHERE ${table} MATCH ? ${typeCond} AND ${projectFilter}
         ORDER BY rank
         LIMIT ?
       `);
-      ftsResults = runFtsAll<any>(stmt, [ftsQuery, ...projectParams, limit * 3]).map((row: any) => ({
-        id: row.id,
-        type: row.type,
-        content: row.content,
-        source_file: row.source_file,
-        concepts: JSON.parse(row.concepts || '[]'),
-        project: row.project,
-        source: 'fts' as const,
-        score: normalizeRank(row.score)
-      }));
-    } else {
-      const countStmt = sqlite.prepare(`
-        SELECT COUNT(*) as total
-        FROM oracle_fts f
-        JOIN oracle_documents d ON f.id = d.id
-        WHERE oracle_fts MATCH ? AND d.type = ? AND ${projectFilter}
-      `);
-      ftsTotal = (runFtsGet(countStmt, [ftsQuery, type, ...projectParams]) as { total: number } | null)?.total ?? 0;
+      const rows = runFtsAll<any>(stmt, [match, ...typeParams, ...projectParams, limit * 3]);
+      return { rows, total };
+    };
 
-      const stmt = sqlite.prepare(`
-        SELECT f.id, f.content, d.type, d.source_file, d.concepts, d.project, rank as score
-        FROM oracle_fts f
-        JOIN oracle_documents d ON f.id = d.id
-        WHERE oracle_fts MATCH ? AND d.type = ? AND ${projectFilter}
-        ORDER BY rank
-        LIMIT ?
-      `);
-      ftsResults = runFtsAll<any>(stmt, [ftsQuery, type, ...projectParams, limit * 3]).map((row: any) => ({
-        id: row.id,
-        type: row.type,
-        content: row.content,
-        source_file: row.source_file,
-        concepts: JSON.parse(row.concepts || '[]'),
-        project: row.project,
-        source: 'fts' as const,
-        score: normalizeRank(row.score)
-      }));
+    const main = keywordLeg('oracle_fts', ftsQuery);
+    let mergedRows = main.rows;
+    ftsTotal = main.total;
+
+    const triQuery = trigramMatchQuery(query);
+    if (triQuery) {
+      // runFtsAll/runFtsGet already degrade to empty-with-a-warn, so a broken
+      // trigram table cannot take down the main leg — but it does log loudly.
+      const tri = keywordLeg('oracle_fts_tri', triQuery);
+      // Merge by id keeping the better (lower) raw rank. bm25 scales differ
+      // slightly across tokenizers; good enough to interleave candidates that
+      // the downstream reranker re-orders anyway.
+      const byId = new Map<string, any>();
+      for (const row of main.rows) byId.set(row.id, row);
+      for (const row of tri.rows) {
+        const seen = byId.get(row.id);
+        if (!seen || row.score < seen.score) byId.set(row.id, row);
+      }
+      mergedRows = [...byId.values()].sort((a, b) => a.score - b.score).slice(0, limit * 3);
+      // Union total without a dedupe query: max() is a true lower bound and
+      // never overcounts. Exact union COUNT would couple the two tables'
+      // failure modes in one statement for a number that is informational.
+      ftsTotal = Math.max(main.total, tri.total);
     }
+
+    ftsResults = mergedRows.map((row: any) => ({
+      id: row.id,
+      type: row.type,
+      content: row.content,
+      source_file: row.source_file,
+      concepts: JSON.parse(row.concepts || '[]'),
+      project: row.project,
+      source: 'fts' as const,
+      score: normalizeRank(row.score)
+    }));
   }
 
   // Vector search (skip if fts-only mode)

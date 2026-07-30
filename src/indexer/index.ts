@@ -18,6 +18,7 @@ import { eq, or, isNull, inArray } from 'drizzle-orm';
 import * as schema from '../db/schema.ts';
 import { oracleDocuments } from '../db/schema.ts';
 import { createDatabase } from '../db/index.ts';
+import { ftsDeleteBatch } from '../db/fts-tables.ts';
 import { detectProject } from '../server/project-detect.ts';
 import type { OracleDocument, IndexerConfig } from '../types.ts';
 
@@ -129,9 +130,9 @@ export class OracleIndexer {
         this.db.delete(oracleDocuments).where(inArray(oracleDocuments.id, idsToDelete)).run();
         const BATCH_SIZE = 500;
         for (let i = 0; i < idsToDelete.length; i += BATCH_SIZE) {
-          const batch = idsToDelete.slice(i, i + BATCH_SIZE);
-          const placeholders = batch.map(() => '?').join(',');
-          this.sqlite.prepare(`DELETE FROM oracle_fts WHERE id IN (${placeholders})`).run(...batch);
+          // Both keyword tables — a delete that misses one leaves ghost hits
+          // in the other, and nothing surfaces the divergence until counts drift.
+          ftsDeleteBatch(this.sqlite, idsToDelete.slice(i, i + BATCH_SIZE));
         }
       }
     }

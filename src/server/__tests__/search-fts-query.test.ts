@@ -17,6 +17,8 @@ const { sqlite } = await import('../../db/index.ts');
 const { buildFtsQuery, handleSearch } = await import('../handlers.ts');
 const { sanitizeFtsQuery } = await import('../../tools/search.ts');
 
+const { ftsUpsert } = await import('../../db/fts-tables.ts');
+
 function insertDoc(id: string, content: string, concepts: string[] = []) {
   const now = Date.now();
   sqlite.prepare(`
@@ -24,15 +26,21 @@ function insertDoc(id: string, content: string, concepts: string[] = []) {
       (id, type, source_file, concepts, created_at, updated_at, indexed_at, project, created_by)
     VALUES (?, 'learning', ?, ?, ?, ?, ?, NULL, 'test')
   `).run(id, `${id}.md`, JSON.stringify(concepts), now, now, now);
-  sqlite.prepare('DELETE FROM oracle_fts WHERE id = ?').run(id);
-  sqlite.prepare('INSERT INTO oracle_fts (id, content, concepts) VALUES (?, ?, ?)')
-    .run(id, content, concepts.join(' '));
+  // Through the real dual-table writer — hand-rolled INSERTs here were exactly
+  // how test schemas drifted from the production one.
+  ftsUpsert(sqlite, id, content, concepts.join(' '));
 }
 
 insertDoc('punctuation', 'Muninn recalls foo bar baz from punctuation-heavy notes.', ['muninn']);
 insertDoc('alpha-only', 'Issue one three one four alphaonly recall lives here.', ['alphaonly1314']);
 insertDoc('beta-only', 'Issue one three one four betaonly memory lives here.', ['betaonly1314']);
 insertDoc('alpha-beta', 'Issue one three one four alphaonly and betaonly both appear here.', ['alphaonly1314', 'betaonly1314']);
+// Thai without spaces around the keyword — unicode61 sees one giant token and
+// misses; only the trigram leg can find it. This is the 26%→100% case.
+insertDoc('thai-run-on', 'บันทึกการตรวจสอบระบบสมองกลางประจำวัน', ['brain']);
+// Short token "zq" (<3 chars) — only the unicode61 leg can serve it. Guards
+// the other side of the dual-table deal.
+insertDoc('short-token', 'the zq tool output was captured here', ['zq']);
 
 describe('FTS query sanitation and recall behavior', () => {
   test('builds quoted OR terms instead of raw punctuation syntax', () => {
@@ -52,6 +60,31 @@ describe('FTS query sanitation and recall behavior', () => {
     expect(ids).toContain('alpha-only');
     expect(ids).toContain('beta-only');
     expect(ids).toContain('alpha-beta');
+  });
+
+  test('Thai mid-word query hits via the trigram leg (unicode61 alone returns nothing)', async () => {
+    // Cross-check the premise first: the main table really cannot see this —
+    // otherwise this test would pass for the wrong reason.
+    const uniOnly = sqlite.prepare(
+      `SELECT id FROM oracle_fts WHERE oracle_fts MATCH ?`
+    ).all('"สมองกลาง"');
+    expect(uniOnly).toHaveLength(0);
+
+    const result = await handleSearch('สมองกลาง', 'all', 10, 0, 'fts');
+    expect(result.results.map((r) => r.id)).toContain('thai-run-on');
+    expect(result.total).toBeGreaterThanOrEqual(1);
+  });
+
+  test('short tokens (<3 chars) still resolve via the unicode61 leg', async () => {
+    const result = await handleSearch('zq', 'all', 10, 0, 'fts');
+    expect(result.results.map((r) => r.id)).toContain('short-token');
+  });
+
+  test('merge dedupes: a doc matched by both legs appears once', async () => {
+    // "alphaonly1314" (>=3 chars) matches alpha-only in BOTH tables.
+    const result = await handleSearch('alphaonly1314', 'all', 20, 0, 'fts');
+    const hits = result.results.filter((r) => r.id === 'alpha-only');
+    expect(hits).toHaveLength(1);
   });
 });
 

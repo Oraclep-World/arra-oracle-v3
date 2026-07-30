@@ -12,6 +12,7 @@ import { ensureVectorStoreConnected } from '../vector/factory.ts';
 import { isVectorSectionEnabled } from '../vector/config.ts';
 import type { SearchResult } from '../server/types.ts';
 import type { ToolContext, ToolResponse, OracleSearchInput } from './types.ts';
+import { FTS_MAIN, FTS_TRI, trigramMatchQuery } from '../db/fts-tables.ts';
 
 let logSearchFn: typeof import('../server/logging.ts').logSearch | null = null;
 async function loadLogSearch(): Promise<typeof import('../server/logging.ts').logSearch> {
@@ -348,35 +349,61 @@ export async function handleSearch(ctx: ToolContext, input: OracleSearchInput): 
   }
 
   // Run FTS5 search (skip only when vector is both requested and available)
+  //
+  // Two keyword tables, both queried, results merged (see src/db/fts-tables.ts):
+  //   oracle_fts (unicode61) — the only one that matches tokens < 3 chars (PQ, jq)
+  //   oracle_fts_tri (trigram) — Thai recall 26% → 100% on real logged queries
   let ftsRawResults: any[] = [];
   if (effectiveMode !== 'vector' && safeQuery) {
+    const runFts = (table: string, match: string): any[] => {
+      const typeFilter = type === 'all' ? '' : 'AND d.type = ?';
+      const stmt = ctx.sqlite.prepare(`
+        SELECT f.id, f.content, d.type, d.source_file, d.concepts, rank
+        FROM ${table} f
+        JOIN oracle_documents d ON f.id = d.id
+        WHERE ${table} MATCH ? ${typeFilter} ${projectFilter}
+        ORDER BY rank
+        LIMIT ?
+      `);
+      const params = type === 'all'
+        ? [match, ...projectParams, limit * 3]
+        : [match, type, ...projectParams, limit * 3];
+      return stmt.all(...params);
+    };
+
     try {
-      if (type === 'all') {
-        const stmt = ctx.sqlite.prepare(`
-          SELECT f.id, f.content, d.type, d.source_file, d.concepts, rank
-          FROM oracle_fts f
-          JOIN oracle_documents d ON f.id = d.id
-          WHERE oracle_fts MATCH ? ${projectFilter}
-          ORDER BY rank
-          LIMIT ?
-        `);
-        ftsRawResults = stmt.all(safeQuery, ...projectParams, limit * 3);
-      } else {
-        const stmt = ctx.sqlite.prepare(`
-          SELECT f.id, f.content, d.type, d.source_file, d.concepts, rank
-          FROM oracle_fts f
-          JOIN oracle_documents d ON f.id = d.id
-          WHERE oracle_fts MATCH ? AND d.type = ? ${projectFilter}
-          ORDER BY rank
-          LIMIT ?
-        `);
-        ftsRawResults = stmt.all(safeQuery, type, ...projectParams, limit * 3);
-      }
+      ftsRawResults = runFts(FTS_MAIN, safeQuery);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       warning = `FTS5 keyword search unavailable: ${errorMessage}`;
       console.error('[FTS5]', errorMessage);
       ftsRawResults = [];
+    }
+
+    // Trigram leg — skipped when no token survives the >=3-char rule.
+    // Failure here must not kill the whole search (main leg already answered),
+    // but it must not be silent either: without the warning, "trigram broken"
+    // looks identical to "trigram found nothing" and Thai recall quietly
+    // regresses to the old 26%.
+    const triQuery = trigramMatchQuery(query);
+    if (triQuery) {
+      try {
+        const triRows = runFts(FTS_TRI, triQuery);
+        // Merge by id. rank = negative bm25 in both tables (lower is better);
+        // the scales aren't identical across tokenizers, but close enough for
+        // interleaving candidates that the reranker downstream re-orders anyway.
+        const byId = new Map<string, any>();
+        for (const row of ftsRawResults) byId.set(row.id, row);
+        for (const row of triRows) {
+          const seen = byId.get(row.id);
+          if (!seen || row.rank < seen.rank) byId.set(row.id, row);
+        }
+        ftsRawResults = [...byId.values()].sort((a, b) => a.rank - b.rank).slice(0, limit * 3);
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        warning = warning || `Trigram keyword search unavailable: ${errorMessage}. Thai recall degraded.`;
+        console.error('[FTS5-tri]', errorMessage);
+      }
     }
   }
 
