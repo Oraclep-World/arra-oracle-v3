@@ -25,6 +25,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
+import { initFtsTables } from '../../db/fts-tables.ts';
 import Database from 'bun:sqlite';
 import { drizzle } from 'drizzle-orm/bun-sqlite';
 import * as schema from '../../db/schema.ts';
@@ -46,8 +47,8 @@ CREATE TABLE oracle_documents (
   project TEXT,
   created_by TEXT
 );
-CREATE VIRTUAL TABLE oracle_fts USING fts5(id UNINDEXED, content, concepts, tokenize='porter unicode61');
-CREATE VIRTUAL TABLE oracle_fts_tri USING fts5(id UNINDEXED, content, concepts, tokenize='trigram');
+-- ตาราง FTS สร้างด้วย initFtsTables() ตัวจริง ไม่ลอก DDL มาแปะ
+-- (schema ที่ลอกมาแล้วลืมอัปเดต = ต้นเหตุที่เทสต์ชุด vector เน่าเงียบ 30 ก.ค.)
 `;
 
 const ORIGINAL_REPO_ROOT = process.env.ORACLE_REPO_ROOT;
@@ -72,6 +73,7 @@ interface Harness {
 function makeHarness(): Harness {
   const sqlite = new Database(':memory:');
   sqlite.exec(FULL_SCHEMA);
+  initFtsTables(sqlite);
   const db = drizzle(sqlite, { schema });
   const ctx: ToolContext = {
     db,
@@ -171,7 +173,7 @@ describe('handleLearn — idempotent retry (locked-but-written)', () => {
     expect(learningsFileCount()).toBe(1);
 
     // Retry with the SAME text heals everything.
-    h.sqlite.exec(`CREATE VIRTUAL TABLE oracle_fts USING fts5(id UNINDEXED, content, concepts, tokenize='porter unicode61')`);
+    initFtsTables(h.sqlite);   // ตัวสร้างจริง ไม่ลอก DDL
     const retry = JSON.parse((await handleLearn(h.ctx, { pattern })).content[0].text);
     expect(retry.success).toBe(true);
     expect(retry.deduped).toBe(true);

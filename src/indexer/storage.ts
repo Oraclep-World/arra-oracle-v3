@@ -8,7 +8,7 @@ import * as schema from '../db/schema.ts';
 import { oracleDocuments } from '../db/schema.ts';
 import type { VectorStoreAdapter } from '../vector/types.ts';
 import type { OracleDocument } from '../types.ts';
-import { ftsUpsert } from '../db/fts-tables.ts';
+import { ftsUpsert, ftsNeedsWrite } from '../db/fts-tables.ts';
 
 /**
  * Store documents in SQLite + vector store
@@ -27,6 +27,11 @@ export async function storeDocuments(
   // FTS writes go through ftsUpsert — one writer for both keyword tables
   // (unicode61 + trigram). The delete-then-insert dedupe rationale and the
   // 2026-04-16 drift story live in src/db/fts-tables.ts.
+
+  // How many docs actually needed a re-tokenise. Logged because "reindexed
+  // 8,000 docs" and "reindexed 8,000 docs, wrote 2" are wildly different
+  // machine loads, and only the second number tells you the guard is working.
+  let ftsWritten = 0;
 
   // Prepare for vector store
   const ids: string[] = [];
@@ -67,7 +72,15 @@ export async function storeDocuments(
         .run();
 
       // SQLite FTS (raw SQL required for FTS5): both keyword tables, idempotent.
-      ftsUpsert(sqlite, doc.id, doc.content, doc.concepts.join(' '));
+      //
+      // Ask the fingerprint table (indexed) before touching FTS at all. Every
+      // FTS statement keyed by id is a full scan, so the win here is not just
+      // skipping the tokenise — it is skipping the lookup that finds the row.
+      const conceptsStr = doc.concepts.join(' ');
+      if (ftsNeedsWrite(sqlite, doc.id, doc.content, conceptsStr)) {
+        ftsUpsert(sqlite, doc.id, doc.content, conceptsStr);
+        ftsWritten++;
+      }
 
       // Vector store metadata (must be primitives, not arrays)
       ids.push(doc.id);
@@ -79,6 +92,7 @@ export async function storeDocuments(
       });
     }
     sqlite.exec('COMMIT');
+    console.log(`FTS: ${ftsWritten} written, ${documents.length - ftsWritten} unchanged (skipped re-tokenise)`);
   } catch (e) {
     sqlite.exec('ROLLBACK');
     throw e;

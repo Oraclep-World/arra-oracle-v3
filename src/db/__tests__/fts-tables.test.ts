@@ -14,7 +14,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import {
   FTS_MAIN, FTS_TRI,
-  initFtsTables, ftsUpsert, ftsDeleteBatch, ftsHasBoth, trigramMatchQuery,
+  initFtsTables, ftsUpsert, ftsDeleteBatch, ftsHasBoth, trigramMatchQuery, ftsNeedsWrite, FTS_HASH,
 } from '../fts-tables.ts';
 
 let db: Database;
@@ -103,6 +103,54 @@ describe('ftsUpsert', () => {
     expect(count(FTS_MAIN)).toBe(1);
     expect(count(FTS_TRI)).toBe(1);
     expect(ftsHasBoth(db, 'd1')).toBe(true);
+  });
+
+  it('is idempotent — re-upserting does not duplicate', () => {
+    ftsUpsert(db, 'd1', 'เนื้อหาเดิมไม่เปลี่ยน', 'c');
+    ftsUpsert(db, 'd1', 'เนื้อหาเดิมไม่เปลี่ยน', 'c');
+    expect(count(FTS_MAIN)).toBe(1);
+    expect(count(FTS_TRI)).toBe(1);
+  });
+});
+
+describe('ftsNeedsWrite — the skip gate', () => {
+  it('true for an unknown doc, false once written', () => {
+    expect(ftsNeedsWrite(db, 'd1', 'เนื้อหา', 'c')).toBe(true);
+    ftsUpsert(db, 'd1', 'เนื้อหา', 'c');
+    // This false is what stops a 15-minute vault-sync from rewriting the corpus.
+    expect(ftsNeedsWrite(db, 'd1', 'เนื้อหา', 'c')).toBe(false);
+  });
+
+  it('true when content changes, and when only concepts change', () => {
+    ftsUpsert(db, 'd1', 'เนื้อหาเดียวกัน', 'old');
+    expect(ftsNeedsWrite(db, 'd1', 'เนื้อหาใหม่', 'old')).toBe(true);
+    expect(ftsNeedsWrite(db, 'd1', 'เนื้อหาเดียวกัน', 'new')).toBe(true);
+  });
+
+  it('never touches an FTS table — the whole point is avoiding the scan', () => {
+    // If this ever regressed to querying oracle_fts by id it would be a full
+    // scan again (5.6ms vs 0.004ms measured on the real corpus).
+    const plan = db.prepare(`EXPLAIN QUERY PLAN SELECT hash FROM ${FTS_HASH} WHERE id = ?`)
+      .all('x') as any[];
+    const detail = plan.map(p => p.detail).join(' ');
+    expect(detail).toContain('SEARCH');
+    expect(detail).not.toContain('SCAN');
+  });
+
+  it('deleting a doc drops its fingerprint, so a restored file re-indexes', () => {
+    ftsUpsert(db, 'd1', 'ไฟล์ที่จะถูกลบแล้วกู้คืน', 'c');
+    ftsDeleteBatch(db, ['d1']);
+    // Same id, same text, coming back — must NOT be skipped, or it stays
+    // invisible in search forever with no error anywhere.
+    expect(ftsNeedsWrite(db, 'd1', 'ไฟล์ที่จะถูกลบแล้วกู้คืน', 'c')).toBe(true);
+  });
+
+  it('initFtsTables prunes fingerprints whose FTS rows are gone', () => {
+    ftsUpsert(db, 'ghost', 'จะถูกลบโดยตัวเขียนรุ่นเก่า', 'c');
+    // an old-code writer deletes from main only, leaving hash + tri behind
+    db.prepare(`DELETE FROM ${FTS_MAIN} WHERE id = ?`).run('ghost');
+    initFtsTables(db);
+    expect(ftsNeedsWrite(db, 'ghost', 'จะถูกลบโดยตัวเขียนรุ่นเก่า', 'c')).toBe(true);
   });
 
   it('is idempotent — re-upserting the same id does not duplicate in either table', () => {

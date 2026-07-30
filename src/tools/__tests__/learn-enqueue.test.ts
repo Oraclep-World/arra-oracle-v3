@@ -17,6 +17,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
+import { initFtsTables } from '../../db/fts-tables.ts';
 import Database from 'bun:sqlite';
 import { drizzle } from 'drizzle-orm/bun-sqlite';
 import * as schema from '../../db/schema.ts';
@@ -38,8 +39,8 @@ CREATE TABLE oracle_documents (
   project TEXT,
   created_by TEXT
 );
-CREATE VIRTUAL TABLE oracle_fts USING fts5(id UNINDEXED, content, concepts, tokenize='porter unicode61');
-CREATE VIRTUAL TABLE oracle_fts_tri USING fts5(id UNINDEXED, content, concepts, tokenize='trigram');
+-- ตาราง FTS สร้างด้วย initFtsTables() ตัวจริง ไม่ลอก DDL มาแปะ
+-- (schema ที่ลอกมาแล้วลืมอัปเดต = ต้นเหตุที่เทสต์ชุด vector เน่าเงียบ 30 ก.ค.)
 CREATE TABLE indexing_jobs (
   id TEXT PRIMARY KEY,
   doc_id TEXT NOT NULL,
@@ -67,6 +68,7 @@ function makeHarness(): Harness {
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'arra-learn-m5-'));
   const sqlite = new Database(':memory:');
   sqlite.exec(FULL_SCHEMA);
+  initFtsTables(sqlite);
   const db = drizzle(sqlite, { schema });
   const ctx: ToolContext = {
     db,
