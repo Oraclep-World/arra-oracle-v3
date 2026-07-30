@@ -19,6 +19,25 @@
  * Every write path MUST go through the helpers here. The last drift
  * (2026-04-16: 1,268 FTS rows for 141 unique ids) happened precisely because
  * each writer hand-rolled its own SQL.
+ *
+ * ── DECIDED, DO NOT REOPEN: no contentless / external-content optimisation ──
+ *
+ * oracle_fts_tri is a standalone FTS5 table, so it keeps its own copy of the
+ * text. On the real brain that costs ~88 MB, not the ~29 MB the index alone
+ * would suggest. Making it `content=''` would give ~55 MB back. It was probed
+ * (2026-07-30) and rejected — the saving is not worth these failure modes:
+ *
+ *   DELETE FROM t WHERE id = ?   → reports success, deletes NOTHING, no error.
+ *                                  ftsUpsert is delete-then-insert, so every
+ *                                  reindex would silently accumulate garbage —
+ *                                  exactly the 2026-04-16 drift, but invisible.
+ *   SELECT content FROM t        → returns NULL, breaking the JOIN in search.
+ *   correct deletion             → requires replaying the ORIGINAL text plus a
+ *                                  matching rowid; feed it slightly wrong text
+ *                                  and the index corrupts with no error raised.
+ *
+ * 88 MB on a disk with 880 GB free, versus an index that can rot without ever
+ * saying so. พลีม chose the boring, loud-when-wrong option. Keep it.
  */
 import type { Database } from 'bun:sqlite';
 
