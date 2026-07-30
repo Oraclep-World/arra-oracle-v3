@@ -71,17 +71,37 @@ export function collectDocuments(opts: CollectOpts): OracleDocument[] {
   }
 
   // 2. Project-first vault dirs
+  //
+  // Dedupe is scoped PER PROJECT, not across the whole vault.
+  //
+  // It used to be global: the first house to be walked won, and every other
+  // house holding a byte-identical file was skipped entirely — the file was
+  // never parsed, so its documents never existed. Measured 2026-07-31 on the
+  // real vault (sha256 over 3,872 files, explains 16/16 skipped files):
+  // 11 BQ learnings were identical to PQ/AQ copies, 4 tinky resonance files
+  // identical to tinkle's.
+  //
+  // The damage was never "content lost" — the text survived under whichever
+  // house happened to sort first. It was ATTRIBUTION lost: BQ's knowledge
+  // answering searches under PQ's name. Every gate we had asked "can we find
+  // it?" and none asked "found under whose name?", so nothing caught it.
+  //
+  // Per-project scope keeps the original intent (one house should not index
+  // the same file twice, e.g. a symlinked or copied path inside itself) while
+  // letting each house own its copy.
   let skippedDupes = 0;
   const projectDirs = discoverProjectPsiDirs(config.repoRoot);
   for (const projectDir of projectDirs) {
     const projectSubdir = path.join(projectDir, 'memory', subdir);
     if (!fs.existsSync(projectSubdir)) continue;
+    const seenInThisProject = new Set<string>();
     const files = getAllMarkdownFiles(projectSubdir);
     for (const filePath of files) {
       const content = fs.readFileSync(filePath, 'utf-8');
       const contentHash = Bun.hash(content).toString(36);
-      if (seenContentHashes.has(contentHash)) { skippedDupes++; continue; }
-      seenContentHashes.add(contentHash);
+      if (seenInThisProject.has(contentHash)) { skippedDupes++; continue; }
+      seenInThisProject.add(contentHash);
+      seenContentHashes.add(contentHash);   // kept for callers that inspect it
       const relPath = path.relative(config.repoRoot, filePath);
       documents.push(...parseFn(relPath, content, relPath));
     }
