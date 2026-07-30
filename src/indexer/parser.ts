@@ -20,7 +20,18 @@ export function parseResonanceFile(filename: string, content: string, sourceFile
   const fileTags = parseFrontmatterTags(content);
   const fileProject = parseFrontmatterProject(content) || inferProjectFromPath(sourceFile);
 
-  const sections = content.split(/^###\s+/m).filter(s => s.trim());
+  // Resonance files use `## ` headings, not `### ` — 72 of 79 files in the
+  // vault (91%). Splitting on `###` matched nothing, so every one of those
+  // files collapsed into a single section and 357 blocks were never indexed
+  // (the 5 Oracle principles, Cold God, Pure White Mirror among them). The
+  // damage was invisible until fts_doc_hash exposed 140 docs the indexer had
+  // stopped touching. Same shape as the other four parsers in this file
+  // (lines 81/127/168/217) — the correct pattern was 58 lines away all along.
+  //
+  // The test() guard mirrors line 81: without it a file with no `##` heading
+  // splits into one giant section rather than yielding nothing, which hides
+  // "this file has no structure" behind a document that looks indexed.
+  const sections = /^##\s+/m.test(content) ? content.split(/^##\s+/m).filter(s => s.trim()) : [];
 
   sections.forEach((section, index) => {
     const lines = section.split('\n');
