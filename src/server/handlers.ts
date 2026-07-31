@@ -120,6 +120,18 @@ export async function handleSearch(
       vectorIndexMissingReason = localVectorIndexMissingReason(cfg);
       if (vectorIndexMissingReason) break;
     }
+    // Every branch that silently downgrades to FTS must say so in `warning`.
+    //
+    // Measured cost of not doing this, 2026-07-31: someone set
+    // vector-server.json `enabled: false` at 13:59. Search kept answering —
+    // same shape, plausible results — and nobody noticed until 15:07. For 68
+    // minutes every oracle in the fleet searched keyword-only while believing
+    // it had hybrid, and finding out took reading a cron log, because the
+    // response carried `vectorAvailable: false` with no reason attached.
+    // The field for the reason already existed and was left empty.
+    //
+    // Each message names what to change, not just what happened — a caller
+    // reading it should not need to open this file to act on it.
     if (vectorDisabledReason) {
       effectiveMode = 'fts';
       warning = `${vectorDisabledReason}; falling back to FTS5-only results`;
@@ -127,8 +139,13 @@ export async function handleSearch(
     } else if (!isVectorSectionEnabled()) {
       vectorSectionDisabled = true;
       effectiveMode = 'fts';
+      warning = 'Vector section is disabled — FTS5-only results. '
+        + 'Set "enabled": true in vector-server.json (in ORACLE_DATA_DIR) '
+        + 'or ORACLE_VECTOR_ENABLED=1, then restart.';
     } else if (vectorIndexMissingReason) {
       effectiveMode = 'fts';
+      warning = `${vectorIndexMissingReason}; falling back to FTS5-only results. `
+        + 'Run the vector reindex to build it.';
     }
   }
 

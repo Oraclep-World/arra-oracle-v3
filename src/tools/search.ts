@@ -342,8 +342,14 @@ export async function handleSearch(ctx: ToolContext, input: OracleSearchInput): 
   const vectorSectionEnabled = requestedMode !== 'fts' && isVectorSectionEnabled();
   let vectorAvailable = requestedMode !== 'fts' ? vectorSectionEnabled : undefined;
 
+  // Same rule as the HTTP handler: a silent downgrade to FTS is how the fleet
+  // spent 68 minutes on keyword-only search believing it had hybrid
+  // (2026-07-31 — vector-server.json flipped to enabled:false, nothing said so).
   if (requestedMode !== 'fts' && !vectorSectionEnabled) {
     effectiveMode = 'fts';
+    warning = 'Vector section is disabled — FTS5-only results. '
+      + 'Set "enabled": true in vector-server.json (in ORACLE_DATA_DIR) '
+      + 'or ORACLE_VECTOR_ENABLED=1, then restart.';
   }
 
   // Run FTS5 search (skip only when vector is both requested and available)

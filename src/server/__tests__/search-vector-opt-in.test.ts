@@ -40,9 +40,31 @@ describe('handleSearch vector opt-in gate', () => {
       const result = await handleSearch('opt in disabled', 'all', 5, 0, mode);
       expect(result.mode).toBe(mode);
       expect(result.vectorAvailable).toBe(false);
-      expect(result.warning).toBeUndefined();
       expect(result.results.some(r => r.id === 'vector-opt-in-doc')).toBe(true);
     }
+  });
+
+  // This assertion used to be `expect(result.warning).toBeUndefined()` — the
+  // original intent being that vector is opt-in, so "not enabled" is a normal
+  // state rather than a fault worth announcing on every request.
+  //
+  // Changed 2026-07-31 (พลีม approved) after that silence was measured: the
+  // flag in vector-server.json went false at 13:59 and no oracle in the fleet
+  // noticed until 15:07 — 68 minutes of keyword-only search while every caller
+  // believed it had hybrid. Diagnosing it meant reading a cron log, because
+  // the response said `vectorAvailable: false` and nothing else.
+  //
+  // A caller that disabled vector on purpose reads a sentence describing what
+  // it already knows. A caller that did not gets told immediately. The costs
+  // of those two mistakes are not symmetric.
+  test('the FTS-only downgrade explains itself and names the fix', async () => {
+    const result = await handleSearch('opt in disabled', 'all', 5, 0, 'hybrid');
+    expect(result.warning).toBeDefined();
+    // Not just "some string": it has to say what is off and what to change,
+    // or it is the same silence with extra characters.
+    expect(result.warning).toContain('Vector section is disabled');
+    expect(result.warning).toContain('vector-server.json');
+    expect(result.warning).toContain('ORACLE_VECTOR_ENABLED');
   });
 });
 
