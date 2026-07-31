@@ -75,8 +75,29 @@ export function parseLearningFile(filename: string, content: string, sourceFileO
   const sourceFile = sourceFileOverride || `\u03c8/memory/learnings/${filename}`;
   const now = Date.now();
 
-  const frontmatterId = parseFrontmatterString(content, ['arra_id', 'id']);
-  const baseId = frontmatterId || `learning_${filename.replace('.md', '')}`;
+  // A file may declare its own id (`arra_id` / `id`) — oracle_learn writes one
+  // so a learning can be referenced across the fleet. That declared id is kept,
+  // but it is NOT unique on its own: the same learning gets copied between
+  // houses, so tinkle, tinky and volt can all ship a file claiming
+  // `learning_2026-06-19_belief-evidence`. Whichever house was walked last won
+  // and overwrote the others — measured 2026-07-31: 450 of 1,698 files declare
+  // an id, 9 ids collide across 26 files, and volt won every single time.
+  //
+  // Scope the declared id by path (option (a), พลีม's call 2026-07-31). The
+  // declared id stays visible as the prefix so cross-fleet references remain
+  // greppable, while the path suffix makes it unique per house.
+  // Only mirrored copies get path-scoped. A file living under this oracle's own
+  // ψ/ keeps its declared id verbatim — oracle_learn writes that id and then
+  // looks the row up by it, a contract three tests pin down. Mirrors of other
+  // houses (github.com/<org>/<house>/ψ/...) are the ones that collide, so those
+  // get the house path appended.
+  const declaredId = parseFrontmatterString(content, ['arra_id', 'id']);
+  const pathKey = filename.replace(/\.md$/, '');
+  const isMirror = /^github\.com\//.test(filename);
+  const frontmatterId = declaredId
+    ? (isMirror ? `${declaredId}@${pathKey}` : declaredId)
+    : null;
+  const baseId = frontmatterId || `learning_${pathKey}`;
   const docType = parseFrontmatterDocType(content, ['arra_type', 'type'], 'learning');
   const fileTags = mergeConceptsWithTags(
     parseFrontmatterTags(content),
