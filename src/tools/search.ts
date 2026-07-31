@@ -12,7 +12,8 @@ import { ensureVectorStoreConnected } from '../vector/factory.ts';
 import { isVectorSectionEnabled } from '../vector/config.ts';
 import type { SearchResult } from '../server/types.ts';
 import type { ToolContext, ToolResponse, OracleSearchInput } from './types.ts';
-import { FTS_MAIN, FTS_TRI, trigramMatchQuery } from '../db/fts-tables.ts';
+import { FTS_MAIN, FTS_TRI, trigramMatchQuery, ftsTokens, joinMatchQuery, pruneDeadTokens } from '../db/fts-tables.ts';
+import type { Database } from 'bun:sqlite';
 
 let logSearchFn: typeof import('../server/logging.ts').logSearch | null = null;
 async function loadLogSearch(): Promise<typeof import('../server/logging.ts').logSearch> {
@@ -79,18 +80,15 @@ export const searchToolDef = {
 /**
  * Sanitize FTS5 query to prevent parse errors.
  * Removes FTS5 special characters that cause syntax errors.
+ *
+ * Tokenizing lives in db/fts-tables.ts (ftsTokens) — this used to be a second
+ * copy of the same regex and the two drifted. Pass `db` to also prune tokens
+ * absent from the index before the 8-token slice.
  */
-export function sanitizeFtsQuery(query: string): string {
-  const tokens = query
-    .replace(/<[^>]*>/g, ' ')
-    .normalize('NFKC')
-    .match(/[\p{L}\p{N}_]+/gu)
-    ?.map((token) => token.trim())
-    .filter((token) => token.length > 0)
-    .slice(0, 8) ?? [];
-
-  const uniqueTokens = Array.from(new Set(tokens));
-  return uniqueTokens.map((token) => `"${token.replace(/"/g, '""')}"`).join(' OR ');
+export function sanitizeFtsQuery(query: string, db?: Database): string {
+  const unique = Array.from(new Set(ftsTokens(query)));
+  const tokens = db ? pruneDeadTokens(db, FTS_MAIN, unique, 8) : unique.slice(0, 8);
+  return joinMatchQuery(tokens);
 }
 
 /**
@@ -325,7 +323,7 @@ export async function handleSearch(ctx: ToolContext, input: OracleSearchInput): 
     throw new Error('Query cannot be empty');
   }
 
-  const safeQuery = sanitizeFtsQuery(query);
+  const safeQuery = sanitizeFtsQuery(query, ctx.sqlite);
 
   // Auto-detect project from cwd if not explicitly specified
   const resolvedProject = (project ?? detectProject(cwd))?.toLowerCase() ?? null;
@@ -385,7 +383,7 @@ export async function handleSearch(ctx: ToolContext, input: OracleSearchInput): 
     // but it must not be silent either: without the warning, "trigram broken"
     // looks identical to "trigram found nothing" and Thai recall quietly
     // regresses to the old 26%.
-    const triQuery = trigramMatchQuery(query);
+    const triQuery = trigramMatchQuery(query, ctx.sqlite);
     if (triQuery) {
       try {
         const triRows = runFts(FTS_TRI, triQuery);

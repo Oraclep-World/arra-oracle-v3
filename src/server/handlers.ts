@@ -15,7 +15,8 @@ import type { SearchResult, SearchResponse } from './types.ts';
 import { ensureVectorStoreConnected, EMBEDDING_MODELS, getVectorStoreConfigByModel } from '../vector/factory.ts';
 import { localVectorOperations } from './vector-operations.ts';
 import { detectProject } from './project-detect.ts';
-import { trigramMatchQuery } from '../db/fts-tables.ts';
+import { trigramMatchQuery, ftsTokens, joinMatchQuery, pruneDeadTokens, FTS_MAIN } from '../db/fts-tables.ts';
+import type { Database } from 'bun:sqlite';
 import { coerceConcepts } from '../tools/learn.ts';
 import { createVectorProxy } from './vector-proxy.ts';
 import { buildLearningMarkdown, dateSlug, learningContentHash, extractContentHash } from '../learn/markdown.ts';
@@ -36,22 +37,21 @@ const FTS_TOKEN_LIMIT = 8;
  * Convert natural-language input into a punctuation-safe FTS5 MATCH query.
  *
  * SQLite FTS5 treats punctuation such as '.', ',', ':' or parentheses as query
- * syntax. Instead of maintaining a brittle blocklist, strip anything that is
- * not a unicode letter/number/underscore into token boundaries, quote every
- * token, and OR the terms. OR avoids the default implicit-AND behavior that
- * made multi-word recall queries overly strict.
+ * syntax. Instead of maintaining a brittle blocklist, split on anything that is
+ * not part of a word (see ftsTokens — Marks included, which is what makes Thai
+ * survive), quote every token, and OR the terms. OR avoids the default
+ * implicit-AND behavior that made multi-word recall queries overly strict.
+ *
+ * Pass `db` to prune tokens that match nothing in `oracle_fts` before the
+ * FTS_TOKEN_LIMIT slice, so dead tokens do not spend budget slots. Omitted →
+ * pure function, unit testable without a database.
  */
-export function buildFtsQuery(query: string): string {
-  const tokens = query
-    .replace(/<[^>]*>/g, ' ')
-    .normalize('NFKC')
-    .match(/[\p{L}\p{N}_]+/gu)
-    ?.map((token) => token.trim())
-    .filter((token) => token.length > 0)
-    .slice(0, FTS_TOKEN_LIMIT) ?? [];
-
-  const uniqueTokens = Array.from(new Set(tokens));
-  return uniqueTokens.map((token) => `"${token.replace(/"/g, '""')}"`).join(' OR ');
+export function buildFtsQuery(query: string, db?: Database): string {
+  const unique = Array.from(new Set(ftsTokens(query)));
+  const tokens = db
+    ? pruneDeadTokens(db, FTS_MAIN, unique, FTS_TOKEN_LIMIT)
+    : unique.slice(0, FTS_TOKEN_LIMIT);
+  return joinMatchQuery(tokens);
 }
 
 function runFtsGet<T>(stmt: { get: (...args: any[]) => T }, args: unknown[]): T | null {
@@ -100,7 +100,7 @@ export async function handleSearch(
   // Auto-detect project from cwd if not explicitly specified
   const resolvedProject = (project ?? detectProject(cwd))?.toLowerCase() ?? null;
   const startTime = Date.now();
-  const ftsQuery = buildFtsQuery(query);
+  const ftsQuery = buildFtsQuery(query, sqlite);
   if (!ftsQuery) {
     return { results: [], total: 0, limit, offset, query };
   }
@@ -179,7 +179,7 @@ export async function handleSearch(
     let mergedRows = main.rows;
     ftsTotal = main.total;
 
-    const triQuery = trigramMatchQuery(query);
+    const triQuery = trigramMatchQuery(query, sqlite);
     if (triQuery) {
       // runFtsAll/runFtsGet already degrade to empty-with-a-warn, so a broken
       // trigram table cannot take down the main leg — but it does log loudly.
