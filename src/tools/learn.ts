@@ -187,13 +187,20 @@ export async function handleLearn(ctx: ToolContext, input: OracleLearnInput): Pr
   const now = new Date();
   const dateStr = dateSlug(now);
 
-  const slug = pattern
+  // NOTE 2026-08-06: เดิม regex เป็น [^a-z0-9\s-] ซึ่งตัดอักขระไทยทิ้งทั้งหมด
+  // ⇒ หัวเรื่องภาษาไทยได้ slug ว่าง ไฟล์กลายเป็น "2026-08-06_.md" และใบวันเดียวกันชนกันเป็น _1 _2
+  // วัดแล้ว 5 ใน 111 ใบของ oracle_learn เสียแบบนี้ (7-30, 7-31, 8-06 ฯลฯ) — คงไทยไว้ใน slug
+  const rawSlug = pattern
     .substring(0, 50)
     .toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, '')
+    .replace(/[^a-z0-9฀-๿\s-]/g, '')
     .replace(/\s+/g, '-')
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '');
+
+  // กันเคสที่หัวเรื่องเป็นสัญลักษณ์/อีโมจิล้วน แล้ว slug ว่างอยู่ดี
+  // ชื่อไฟล์ที่เป็นวันที่เปล่าจะชนกันเองและค้นด้วยชื่อไม่ได้ ⇒ ให้มีอะไรสักอย่างเสมอ
+  const slug = rawSlug || `learning-${Date.now().toString(36).slice(-6)}`;
 
   const filename = `${dateStr}_${slug}.md`;
 
