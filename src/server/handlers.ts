@@ -818,13 +818,27 @@ export function handleLearn(
   const d = new Date();
   const dateStr = dateSlug(d);
 
-  const slug = pattern
+  // 🔴 2026-08-08 — บั๊กเดิมถูกแก้ไปแล้วที่ `src/tools/learn.ts` (a350fafe, 6 ส.ค.)
+  //    แต่ **ทางที่รันจริงคือไฟล์นี้**: MCP `oracle_learn` → POST /api/learn
+  //    → routes/knowledge/learn.ts → handleLearn() ที่นี่ ⇒ fix เดิมไม่เคยถูกเรียกสักครั้ง
+  //    อาการ: หัวเรื่องไทยล้วน → regex เก่าตัดทิ้งหมด → slug ว่าง → ไฟล์ `2026-08-08_.md`
+  //    ⇒ **ทุกบ้านที่เขียนไทยในวันเดียวกัน ได้ชื่อไฟล์เดียวกัน ⇒ ทับกันเงียบ ไม่มี error**
+  //    (foodydev เจอสด แล้วพิสูจน์ด้วยการ**เรียกฟังก์ชันซ้ำ** หลังพบว่า timestamp ทุกชั้นบอก "ควรหายแล้ว":
+  //     ยิงหัวเรื่องไทย+คำ ascii `fix` → ได้ `2026-08-08_fix.md` = ไทยหายหมด เหลือเฉพาะ ascii
+  //     ⇒ นั่นคือหลักฐานว่า regex ที่กำลังทำงานเป็นตัวเก่า ไม่ใช่ตัวที่อยู่ในไฟล์ที่แก้ไป)
+  //    บทเรียน: แก้ที่ไฟล์หนึ่งแล้วไม่ทาทั่ว "ทางที่ของไหลผ่าน" = ยังพังเหมือนเดิม
+  //             และตัว fix เองกลายเป็นหลักฐานปลอมว่า "เรื่องนี้ปิดแล้ว"
+  const rawSlug = pattern
     .substring(0, 50)
     .toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, '')
+    .replace(/[^a-z0-9฀-๿\s-]/g, '')   // ⬅ คงอักขระไทย (U+0E00–U+0E7F) ไว้ในชื่อไฟล์
     .replace(/\s+/g, '-')
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '');
+
+  // กันเคสหัวเรื่องเป็นอีโมจิ/สัญลักษณ์ล้วน แล้ว slug ยังว่างอยู่ดี
+  // ชื่อไฟล์ที่เหลือแต่วันที่จะชนกันเองทุกใบ และค้นด้วยชื่อไม่ได้ ⇒ ต้องมีอะไรสักอย่างเสมอ
+  const slug = rawSlug || `learning-${Date.now().toString(36).slice(-6)}`;
 
   // On slug collision (same date + same first-50-char prefix), append -2, -3, …
   // until unique. Prevents 500s when two writes share a slug within one day
