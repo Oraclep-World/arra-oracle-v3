@@ -12,6 +12,11 @@ export interface SearchResult {
   score?: number;
   distance?: number;
   model?: string;
+  // Supersede stamp (ruling 2026-08-21 ข, ora101). Present only when the doc
+  // has been retracted: a stamp the reader never sees is the same as no stamp.
+  superseded_by?: string;
+  superseded_at?: number;
+  superseded_reason?: string;
 }
 
 export interface SearchResponse {

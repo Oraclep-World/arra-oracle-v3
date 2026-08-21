@@ -299,6 +299,38 @@ export async function handleSearch(
   // Apply pagination
   const results = combined.slice(offset, offset + limit);
 
+  // Attach supersede stamps (ruling 2026-08-21 ข, ora101 + Ferris's live test).
+  // The stamp lives in oracle_documents; before this block every search path
+  // dropped it, so a retracted doc kept ranking #1 with nothing on it — a
+  // stamp the reader never sees is the same as no stamp. One batch lookup
+  // over the final page only (≤ limit ids), all modes pass through here.
+  if (results.length > 0) {
+    try {
+      const placeholders = results.map(() => '?').join(',');
+      const stampStmt = sqlite.prepare(`
+        SELECT id, superseded_by, superseded_at, superseded_reason
+        FROM oracle_documents
+        WHERE id IN (${placeholders}) AND superseded_by IS NOT NULL
+      `);
+      const stamps = new Map(
+        (stampStmt.all(...results.map(r => r.id)) as Array<{
+          id: string; superseded_by: string; superseded_at: number | null; superseded_reason: string | null;
+        }>).map(s => [s.id, s])
+      );
+      for (const r of results) {
+        const s = stamps.get(r.id);
+        if (s) {
+          r.superseded_by = s.superseded_by;
+          if (s.superseded_at != null) r.superseded_at = s.superseded_at;
+          if (s.superseded_reason != null) r.superseded_reason = s.superseded_reason;
+        }
+      }
+    } catch (error) {
+      // Never let the stamp lookup take down search itself — but say so.
+      console.error('[Supersede Stamp Lookup Error]', error instanceof Error ? error.message : String(error));
+    }
+  }
+
   // Log search
   const searchTime = Date.now() - startTime;
   logSearch(query, type, requestedMode, total, searchTime, results);
