@@ -17,6 +17,15 @@ export interface SearchResult {
   superseded_by?: string;
   superseded_at?: number;
   superseded_reason?: string;
+  // Advisory (EX, 2026-08-21): this chunk itself is not stamped, but another
+  // chunk of the same source file is. Chunk-level stamps stay authoritative
+  // (a correct section must not inherit a wrong section's stamp — warp's
+  // case), yet a reader landing on any chunk of the file deserves the signal.
+  superseded_elsewhere_in_file?: {
+    chunk_id: string;
+    superseded_by: string;
+    superseded_reason?: string;
+  };
 }
 
 export interface SearchResponse {

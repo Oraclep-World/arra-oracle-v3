@@ -325,6 +325,40 @@ export async function handleSearch(
           if (s.superseded_reason != null) r.superseded_reason = s.superseded_reason;
         }
       }
+
+      // File-level advisory (EX): a stamp lives on a chunk, but a long file is
+      // split into many chunks at index time — a reader can land on an
+      // unstamped sibling and never see the retraction. Chunk stamps stay
+      // authoritative; siblings only get an advisory pointer, never the stamp
+      // itself (a correct section must not inherit a wrong section's stamp).
+      const unstampedFiles = [...new Set(
+        results.filter(r => !r.superseded_by && r.source_file).map(r => r.source_file)
+      )];
+      if (unstampedFiles.length > 0) {
+        const filePh = unstampedFiles.map(() => '?').join(',');
+        const sibStmt = sqlite.prepare(`
+          SELECT source_file, id, superseded_by, superseded_reason
+          FROM oracle_documents
+          WHERE source_file IN (${filePh}) AND superseded_by IS NOT NULL
+        `);
+        const sibs = new Map<string, { id: string; superseded_by: string; superseded_reason: string | null }>();
+        for (const s of sibStmt.all(...unstampedFiles) as Array<{
+          source_file: string; id: string; superseded_by: string; superseded_reason: string | null;
+        }>) {
+          if (!sibs.has(s.source_file)) sibs.set(s.source_file, s);
+        }
+        for (const r of results) {
+          if (r.superseded_by || !r.source_file) continue;
+          const s = sibs.get(r.source_file);
+          if (s) {
+            r.superseded_elsewhere_in_file = {
+              chunk_id: s.id,
+              superseded_by: s.superseded_by,
+              ...(s.superseded_reason != null ? { superseded_reason: s.superseded_reason } : {}),
+            };
+          }
+        }
+      }
     } catch (error) {
       // Never let the stamp lookup take down search itself — but say so.
       console.error('[Supersede Stamp Lookup Error]', error instanceof Error ? error.message : String(error));
