@@ -82,6 +82,7 @@ export class OracleIndexer {
       ...collectDocuments({ ...shared, subdir: 'learnings', parseFn: parseLearningFile, label: 'learning' }),
       ...collectDocuments({ ...shared, subdir: 'retrospectives', parseFn: parseRetroFile, label: 'retrospective' }),
       ...collectDocuments({ ...shared, subdir: 'distillations', parseFn: parseDistillationFile, label: 'distillation' }),
+      ...collectDocuments({ ...shared, subdir: 'learn', psiSubdir: true, parseFn: parseLearningFile, label: 'learn' }),
       ...collectSecurityCorpus(shared),
     ];
 

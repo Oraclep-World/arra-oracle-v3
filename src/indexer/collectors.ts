@@ -44,6 +44,10 @@ interface CollectOpts {
   subdir: string;           // e.g. 'resonance', 'learnings', 'retrospectives'
   parseFn: (relPath: string, content: string, sourceOverride?: string) => OracleDocument[];
   label: string;            // e.g. 'resonance', 'learning', 'retrospective'
+  /** Read ψ/<subdir> instead of ψ/memory/<subdir> (e.g. ψ/learn — study notes,
+   *  พลีม 22 Oct 2026 "เก็บเลยครับ"). source_file keeps the real path so a reader
+   *  can open the note in the house repo; ψ/lab stays out on purpose. */
+  psiSubdir?: boolean;
 }
 
 /**
@@ -51,12 +55,13 @@ interface CollectOpts {
  * deduplicates by content hash, parses files with the given parse function.
  */
 export function collectDocuments(opts: CollectOpts): OracleDocument[] {
-  const { config, seenContentHashes, subdir, parseFn, label } = opts;
+  const { config, seenContentHashes, subdir, parseFn, label, psiSubdir } = opts;
+  const under = psiSubdir ? subdir : `memory/${subdir}`;
   const documents: OracleDocument[] = [];
   let totalFiles = 0;
 
   // 1. Root path
-  const sourcePath = path.join(config.repoRoot, `\u03c8/memory/${subdir}`);
+  const sourcePath = path.join(config.repoRoot, `\u03c8/${under}`);
   if (fs.existsSync(sourcePath)) {
     const files = getAllMarkdownFiles(sourcePath);
     if (files.length === 0) {
@@ -92,7 +97,7 @@ export function collectDocuments(opts: CollectOpts): OracleDocument[] {
   let skippedDupes = 0;
   const projectDirs = discoverProjectPsiDirs(config.repoRoot);
   for (const projectDir of projectDirs) {
-    const projectSubdir = path.join(projectDir, 'memory', subdir);
+    const projectSubdir = path.join(projectDir, under);
     if (!fs.existsSync(projectSubdir)) continue;
     const seenInThisProject = new Set<string>();
     const files = getAllMarkdownFiles(projectSubdir);
