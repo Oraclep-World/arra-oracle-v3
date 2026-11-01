@@ -14,7 +14,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import {
   FTS_MAIN, FTS_TRI,
-  initFtsTables, ftsUpsert, ftsDeleteBatch, ftsHasBoth, trigramMatchQuery, ftsNeedsWrite, FTS_HASH, ftsTokens,
+  initFtsTables, ftsUpsert, ftsDeleteBatch, ftsHasBoth, trigramMatchQuery, ftsNeedsWrite, FTS_HASH,
 } from '../fts-tables.ts';
 
 let db: Database;
@@ -201,21 +201,9 @@ describe('ftsHasBoth', () => {
   });
 });
 
-describe('ftsTokens — Thai word segmentation', () => {
-  it('keeps the unspaced Thai run and appends its words', () => {
-    expect(ftsTokens('อ่านงานเพื่อนก่อนยิงฝูง')).toEqual(
-      ['อ่านงานเพื่อนก่อนยิงฝูง', 'อ่าน', 'งาน', 'เพื่อน', 'ก่อน', 'ยิง', 'ฝูง']);
-  });
-
-  it('leaves non-Thai tokens and single-word Thai tokens unchanged', () => {
-    expect(ftsTokens('verify PQ')).toEqual(['verify', 'PQ']);
-    expect(ftsTokens('เพื่อน')).toEqual(['เพื่อน']);
-  });
-});
-
 describe('trigramMatchQuery', () => {
   it('keeps tokens >= 3 chars, quoted and OR-joined', () => {
-    expect(trigramMatchQuery('สมองกลาง verify')).toBe('"สมองกลาง" OR "สมอง" OR "กลาง" OR "verify"');
+    expect(trigramMatchQuery('สมองกลาง verify')).toBe('"สมองกลาง" OR "verify"');
   });
 
   it('drops short tokens and returns null when nothing survives', () => {
@@ -224,7 +212,7 @@ describe('trigramMatchQuery', () => {
     expect(trigramMatchQuery('PQ')).toBeNull();
     expect(trigramMatchQuery('x jq')).toBeNull();
     // mixed: short token dropped, long token kept
-    expect(trigramMatchQuery('PQ สมองกลาง')).toBe('"สมองกลาง" OR "สมอง" OR "กลาง"');
+    expect(trigramMatchQuery('PQ สมองกลาง')).toBe('"สมองกลาง"');
   });
 
   it('counts length in code points, not UTF-16 units', () => {

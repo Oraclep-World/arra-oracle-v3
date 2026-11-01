@@ -263,27 +263,7 @@ export function ftsTokens(query: string): string[] {
     .normalize('NFC')
     .match(/[\p{L}\p{M}\p{N}_]+/gu)
     ?.map((token) => token.trim())
-    .filter((token) => token.length > 0)
-    .flatMap(withThaiWords) ?? [];
-}
-
-/**
- * Thai has no spaces, so a Thai sentence arrives as ONE token. Both FTS legs
- * then need that whole run to appear verbatim in a document — a question
- * phrased as a situation never does (1 Nov 2026, tinky + ferris: 20 Thai
- * situation queries, fts hit@3 0/20 before this). Keep the run itself (verbatim
- * still wins via trigram) and append its dictionary words from Intl.Segmenter.
- * pruneDeadTokens runs before the 8-token slice, so dead runs do not spend budget.
- */
-const THAI = /\p{Script=Thai}/u;
-const thaiWords = new Intl.Segmenter('th', { granularity: 'word' });
-function withThaiWords(token: string): string[] {
-  if (!THAI.test(token)) return [token];
-  const words: string[] = [];
-  for (const s of thaiWords.segment(token)) {
-    if (s.isWordLike && s.segment !== token) words.push(s.segment);
-  }
-  return [token, ...words];
+    .filter((token) => token.length > 0) ?? [];
 }
 
 /** Quote + OR-join tokens into an FTS5 MATCH expression. */
