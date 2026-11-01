@@ -1,8 +1,14 @@
 /**
- * bun test preload — loads the fail-closed isolation before any test file.
- * The real logic lives in src/test-isolation.ts and is also imported first by
- * src/config.ts, so isolation holds even when bun test runs from a cwd without
- * this bunfig. History of why: see that file (and 95dd56f8, the detect-based
- * version ferris broke 6 ways on 1 Nov 2026).
+ * bun test preload — FORCES isolation for every file bun test runs from this
+ * repo, including explicit non-suffixed paths with a preset NODE_ENV (ferris,
+ * 1 Nov 2026: `NODE_ENV=production bun test ./probe3.ts` → live DB under v3).
+ * Bun exposes no runtime signal for "under bun test" (globals, Bun keys and env
+ * are identical to `bun run`, measured), but this preload is only loaded by
+ * bun test via bunfig, so loading it IS the signal.
+ * The logic lives in src/test-isolation.ts (also the first import of config.ts,
+ * which covers runs from other cwds by NODE_ENV / entry filename).
+ * Accepted residual: a non-suffixed file run with `bun test` from a cwd without
+ * this bunfig AND a preset non-test NODE_ENV.
  */
-import '../src/test-isolation.ts';
+process.env.ARRA_TEST_ISOLATION = '1';
+await import('../src/test-isolation.ts');

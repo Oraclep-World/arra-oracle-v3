@@ -30,7 +30,8 @@ const g = globalThis as any;
 // even with NODE_ENV preset. scripts/seed-test-* write test rows too (break S), so they count.
 const entry = String((globalThis as any).Bun?.main ?? process.argv[1] ?? '');
 const UNDER_TEST = process.env.NODE_ENV === 'test'
-  || /\.(test|spec)\.[cm]?[jt]sx?$/.test(entry)
+  || /[._](test|spec)\.[cm]?[jt]sx?$/.test(entry)          // bun also discovers *_test.* / *_spec.*
+  || /[\/](tests|__tests__)[\/]/.test(entry)
   || /[\/]scripts[\/]seed-test[^\/]*$/.test(entry)
   || process.env.ARRA_TEST_ISOLATION === '1';
 
