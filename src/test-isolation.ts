@@ -25,7 +25,16 @@ import { join, resolve } from 'node:path';
 const FLAG = Symbol.for('arra.testIsolation');
 const g = globalThis as any;
 
-if (process.env.NODE_ENV === 'test' && !g[FLAG]) {
+// When: NODE_ENV=test is not enough — bun keeps a preset NODE_ENV (ferris: NODE_ENV=production
+// bun test → no isolation). Bun.main is the entry file: under bun test it is the *.test/.spec file,
+// even with NODE_ENV preset. scripts/seed-test-* write test rows too (break S), so they count.
+const entry = String((globalThis as any).Bun?.main ?? process.argv[1] ?? '');
+const UNDER_TEST = process.env.NODE_ENV === 'test'
+  || /\.(test|spec)\.[cm]?[jt]sx?$/.test(entry)
+  || /[\/]scripts[\/]seed-test[^\/]*$/.test(entry)
+  || process.env.ARRA_TEST_ISOLATION === '1';
+
+if (UNDER_TEST && !g[FLAG]) {
   g[FLAG] = true;
   const real = (p: string) => { try { return realpathSync(p); } catch { return resolve(p); } };
   const tmpRoot = real(tmpdir());

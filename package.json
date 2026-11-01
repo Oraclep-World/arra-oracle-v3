@@ -43,7 +43,7 @@
     "test:integration:db": "bun test --isolate src/integration/database.test.ts",
     "test:integration:mcp": "bun test src/integration/mcp.test.ts",
     "test:integration:http": "bun test src/integration/http.test.ts",
-    "test:seed": "bun scripts/seed-test-data.ts",
+    "test:seed": "ORACLE_DATA_DIR=/tmp/arra-e2e-data bun scripts/seed-test-data.ts",
     "test:coverage": "bun test --coverage",
     "db:generate": "bunx drizzle-kit generate",
     "db:migrate": "bunx drizzle-kit migrate",
