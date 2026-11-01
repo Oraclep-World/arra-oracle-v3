@@ -5,6 +5,7 @@
  * No DB connections, no table creation.
  */
 
+import './test-isolation.ts'; // must stay first: swaps live data paths for temp under bun test
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
