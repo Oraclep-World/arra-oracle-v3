@@ -33,7 +33,19 @@ const UNDER_TEST = process.env.NODE_ENV === 'test'
   || /[._](test|spec)\.[cm]?[jt]sx?$/.test(entry)          // bun also discovers *_test.* / *_spec.*
   || /[\/](tests|__tests__)[\/]/.test(entry)
   || /[\/]scripts[\/]seed-test[^\/]*$/.test(entry)
-  || process.env.ARRA_TEST_ISOLATION === '1';
+  || process.env.ARRA_TEST_ISOLATION === '1'
+  || underBunTestCmdline();
+
+// Linux (the whole fleet): bun keeps argv identical to `bun run`, but /proc/self/cmdline is
+// not rewritten — `bun test ./x.ts` → ["bun","test","./x.ts"] (ferris, 1 Nov 2026). Covers a
+// non-suffixed file + preset NODE_ENV + cwd without bunfig. A script whose first arg is the
+// literal "test" would be isolated by mistake — the fail-closed direction.
+function underBunTestCmdline(): boolean {
+  try {
+    const parts = require('node:fs').readFileSync('/proc/self/cmdline', 'utf8').split('\0');
+    return parts[1] === 'test';
+  } catch { return false; }
+}
 
 if (UNDER_TEST && !g[FLAG]) {
   g[FLAG] = true;
