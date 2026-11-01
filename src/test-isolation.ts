@@ -43,7 +43,16 @@ const UNDER_TEST = process.env.NODE_ENV === 'test'
 function underBunTestCmdline(): boolean {
   try {
     const parts = require('node:fs').readFileSync('/proc/self/cmdline', 'utf8').split('\0');
-    return parts[1] === 'test';
+    // skip bun's global flags before the subcommand (ferris: --smol / --env-file=… / --cwd=…
+    // moved "test" off parts[1]); flags whose value may be a separate word skip it too.
+    const TAKES_VALUE = new Set(['--cwd', '--env-file', '--config', '-c', '--preload', '-r', '--tsconfig-override']);
+    for (let i = 1; i < parts.length; i++) {
+      const p = parts[i];
+      if (!p) continue;
+      if (p.startsWith('-')) { if (TAKES_VALUE.has(p)) i++; continue; }
+      return p === 'test';
+    }
+    return false;
   } catch { return false; }
 }
 
