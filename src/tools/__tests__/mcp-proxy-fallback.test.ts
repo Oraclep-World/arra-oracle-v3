@@ -20,7 +20,9 @@ afterEach(() => {
   }
 });
 
-test('MCP covered tools fall back to lazy embedded when ORACLE_API is unreachable', async () => {
+// Oraclep-World fork, 8 Nov 2026 (Pleam: "เอาออกได้เลย"): the lazy embedded fallback was removed on purpose.
+// This test used to assert the fallback answered; it now asserts the opposite — a loud error, no local answer.
+test('MCP covered tools do NOT fall back to embedded when ORACLE_API is unreachable (fail loud)', async () => {
   const dataDir = mkdtempSync(join(tmpdir(), 'arra-mcp-fallback-'));
   tempDirs.push(dataDir);
 
@@ -52,9 +54,10 @@ test('MCP covered tools fall back to lazy embedded when ORACLE_API is unreachabl
       arguments: { query: 'standalone fallback smoke', mode: 'fts', limit: 1 },
     }) as { content?: Array<{ type: string; text: string }>; isError?: boolean };
 
-    expect(result.isError).not.toBe(true);
-    expect(result.content?.[0]?.text).toContain('"results"');
-    expect(stderr.join('')).toContain('ORACLE_API unavailable for oracle_search');
+    expect(result.isError).toBe(true);
+    expect(result.content?.[0]?.text).toContain('CENTRAL BRAIN DOWN');
+    expect(result.content?.[0]?.text).not.toContain('"results"');
+    expect(stderr.join('')).toContain('ORACLE_API unavailable for oracle_search; no embedded fallback');
   } finally {
     await client.close();
   }

@@ -127,6 +127,24 @@ class OracleApiUnavailableError extends Error {
   }
 }
 
+// No silent embedded fallback in HTTP-client mode (Pleam 8 Nov 2026 22:16, via tinky:
+// "เอาออกได้เลย"). Every house must see the same brain: if the central server is down,
+// calls fail loudly instead of each MCP quietly opening its own DB and drifting apart.
+// arra-health (cron, ora101) restarts the central server. ORACLE_API=embedded stays as
+// an explicit opt-in.
+function centralDownResponse(toolName: string, detail: string): ToolResponse {
+  return {
+    content: [{
+      type: 'text',
+      text: `CENTRAL BRAIN DOWN — ${toolName} was not run.\n` +
+        `${detail}\n` +
+        `  → No local fallback by design: all houses share one brain, so they fail together and heal together.\n` +
+        `  → arra-health restarts it within ~10 min (log ~/.oracle/logs/arra-health.log). Retry later; do not guess the answer.`,
+    }],
+    isError: true,
+  };
+}
+
 function resolveOracleApiBase(): string | null {
   const raw = process.env.ORACLE_API ?? DEFAULT_ORACLE_API;
   const trimmed = raw.trim();
@@ -320,7 +338,7 @@ class OracleMCPServer {
     }
     this.oracleApiBase = resolveOracleApiBase();
     if (this.oracleApiBase) {
-      console.error(`[Oracle] Running in HTTP-client mode (ORACLE_API → ${this.oracleApiBase}) with lazy embedded fallback`);
+      console.error(`[Oracle] Running in HTTP-client mode (ORACLE_API → ${this.oracleApiBase}) · no embedded fallback`);
     } else {
       console.error('[Oracle] Running in embedded mode (ORACLE_API=embedded)');
     }
@@ -385,6 +403,9 @@ class OracleMCPServer {
 
   /** Build ToolContext from server state */
   private async getToolCtx(): Promise<ToolContext> {
+    if (this.oracleApiBase) {
+      throw new Error('Embedded Oracle is disabled in HTTP-client mode (no local fallback) — set ORACLE_API=embedded to opt in');
+    }
     if (!this.embeddedReady) {
       this.embeddedReady = this.initEmbedded();
     }
@@ -477,8 +498,8 @@ class OracleMCPServer {
       return httpPayloadToToolResponse(payload, !response.ok);
     } catch (err) {
       if (err instanceof OracleApiUnavailableError) {
-        console.error(`[Oracle] ORACLE_API unavailable for ${toolName}; lazy-opening embedded fallback`);
-        return null;
+        console.error(`[Oracle] ORACLE_API unavailable for ${toolName}; no embedded fallback`);
+        return centralDownResponse(toolName, err.message);
       }
       throw err;
     }
@@ -555,6 +576,10 @@ class OracleMCPServer {
           : {};
         const proxied = await this.proxyToolCall(toolName, args);
         if (proxied) return proxied;
+        if (this.oracleApiBase) {
+          // HTTP-client mode but no central route for this tool/arguments — refuse rather than open a local DB
+          return centralDownResponse(toolName, `No central route for ${toolName} with these arguments (check required args).`);
+        }
 
         switch (toolName) {
           // Core tools (delegated to src/tools/)
