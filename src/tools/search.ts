@@ -14,7 +14,7 @@ import type { SearchResult } from '../server/types.ts';
 import type { ToolContext, ToolResponse, OracleSearchInput } from './types.ts';
 import { FTS_THAI } from '../db/fts-thai.ts';
 import { thaiMatchQuery } from '../db/fts-thai-query.ts';
-import { dedupeBySourceFile } from '../db/search-dedupe.ts';
+import { dedupeBySourceFile, rrfMerge } from '../db/search-dedupe.ts';
 import { FTS_MAIN, FTS_TRI, trigramMatchQuery, ftsTokens, joinMatchQuery, pruneDeadTokens } from '../db/fts-tables.ts';
 import type { Database } from 'bun:sqlite';
 
@@ -387,6 +387,8 @@ export async function handleSearch(ctx: ToolContext, input: OracleSearchInput): 
       ftsRawResults = [];
     }
 
+    const extraLegs: any[][] = [];
+
     // Trigram leg — skipped when no token survives the >=3-char rule.
     // Failure here must not kill the whole search (main leg already answered),
     // but it must not be silent either: without the warning, "trigram broken"
@@ -395,17 +397,7 @@ export async function handleSearch(ctx: ToolContext, input: OracleSearchInput): 
     const triQuery = trigramMatchQuery(query, ctx.sqlite);
     if (triQuery) {
       try {
-        const triRows = runFts(FTS_TRI, triQuery);
-        // Merge by id. rank = negative bm25 in both tables (lower is better);
-        // the scales aren't identical across tokenizers, but close enough for
-        // interleaving candidates that the reranker downstream re-orders anyway.
-        const byId = new Map<string, any>();
-        for (const row of ftsRawResults) byId.set(row.id, row);
-        for (const row of triRows) {
-          const seen = byId.get(row.id);
-          if (!seen || row.rank < seen.rank) byId.set(row.id, row);
-        }
-        ftsRawResults = [...byId.values()].sort((a, b) => a.rank - b.rank).slice(0, limit * 3);
+        extraLegs.push(runFts(FTS_TRI, triQuery));
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
         warning = warning || `Trigram keyword search unavailable: ${errorMessage}. Thai recall degraded.`;
@@ -417,18 +409,17 @@ export async function handleSearch(ctx: ToolContext, input: OracleSearchInput): 
     const thQuery = thaiMatchQuery(query, ctx.sqlite);
     if (thQuery) {
       try {
-        const byId = new Map<string, any>();
-        for (const row of ftsRawResults) byId.set(row.id, row);
-        for (const row of runFts(FTS_THAI, thQuery)) {
-          const seen = byId.get(row.id);
-          if (!seen || row.rank < seen.rank) byId.set(row.id, row);
-        }
-        ftsRawResults = [...byId.values()].sort((a, b) => a.rank - b.rank).slice(0, limit * 3);
+        extraLegs.push(runFts(FTS_THAI, thQuery));
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
         warning = warning || `Thai word-split search unavailable: ${errorMessage}. Thai recall degraded.`;
         console.error('[FTS5-th]', errorMessage);
       }
+    }
+
+    // Fuse the legs on rank (RRF k=60), never raw bm25 across tables — see rrfMerge.
+    if (extraLegs.length > 0) {
+      ftsRawResults = rrfMerge([ftsRawResults, ...extraLegs]).slice(0, limit * 3);
     }
   }
 

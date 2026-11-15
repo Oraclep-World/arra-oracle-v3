@@ -6,6 +6,28 @@
  * chunks of the same file are dropped, so the list fills from the next
  * documents. Rows without a source_file are never folded (nothing to key on).
  */
+export const RRF_K = 60;
+
+/**
+ * Reciprocal-rank fusion (k=60) over ranked lists — Nat's relic5 way (never
+ * compare raw bm25 across indexes; fuse on rank). Each leg is sorted
+ * best-first; fused score = sum over legs of 1/(k + rank), rank 1-based.
+ * oracle_fts / _tri / _th have different tokenizers and bm25 scales, so raw
+ * scores let one table drown the others. Ties keep earlier-leg order.
+ */
+export function rrfMerge<T extends { id: string }>(legs: T[][], k: number = RRF_K): T[] {
+  const fused = new Map<string, { row: T; score: number }>();
+  for (const leg of legs) {
+    leg.forEach((row, i) => {
+      const add = 1 / (k + i + 1);
+      const cur = fused.get(row.id);
+      if (cur) cur.score += add;
+      else fused.set(row.id, { row, score: add });
+    });
+  }
+  return [...fused.values()].sort((a, b) => b.score - a.score).map((f) => f.row);
+}
+
 export function dedupeBySourceFile<T extends { id: string; source_file?: string | null }>(rows: T[]): T[] {
   const seen = new Set<string>();
   const out: T[] = [];

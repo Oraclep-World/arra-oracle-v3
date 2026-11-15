@@ -7,7 +7,7 @@ import { Database } from 'bun:sqlite';
 import { FTS_MAIN, initFtsTables, ftsUpsert, ftsDeleteBatch } from '../fts-tables.ts';
 import { FTS_THAI, segmentThai, hasThai } from '../fts-thai.ts';
 import { thaiMatchQuery } from '../fts-thai-query.ts';
-import { dedupeBySourceFile } from '../search-dedupe.ts';
+import { dedupeBySourceFile, rrfMerge } from '../search-dedupe.ts';
 
 let db: Database;
 const count = (t: string) => (db.prepare(`SELECT count(*) n FROM ${t}`).get() as { n: number }).n;
@@ -59,6 +59,17 @@ describe('oracle_fts_th table', () => {
   });
   it('thaiMatchQuery is null for non-Thai queries', () => {
     expect(thaiMatchQuery('PQ jq oracle search')).toBeNull();
+  });
+});
+
+describe('rrfMerge', () => {
+  it('fuses on rank, ignoring raw scores; docs in several legs rise', () => {
+    const a = [{ id: 'x', s: -900 }, { id: 'y', s: -800 }];
+    const b = [{ id: 'z', s: -1 }, { id: 'y', s: -0.5 }];
+    expect(rrfMerge([a, b]).map((r) => r.id)).toEqual(['y', 'x', 'z']);
+  });
+  it('a single leg keeps its order', () => {
+    expect(rrfMerge([[{ id: '1' }, { id: '2' }]]).map((r) => r.id)).toEqual(['1', '2']);
   });
 });
 

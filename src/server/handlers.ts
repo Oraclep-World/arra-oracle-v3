@@ -17,7 +17,7 @@ import { localVectorOperations } from './vector-operations.ts';
 import { detectProject } from './project-detect.ts';
 import { FTS_THAI } from '../db/fts-thai.ts';
 import { thaiMatchQuery } from '../db/fts-thai-query.ts';
-import { dedupeBySourceFile } from '../db/search-dedupe.ts';
+import { dedupeBySourceFile, rrfMerge } from '../db/search-dedupe.ts';
 import { trigramMatchQuery, ftsTokens, joinMatchQuery, pruneDeadTokens, FTS_MAIN } from '../db/fts-tables.ts';
 import type { Database } from 'bun:sqlite';
 import { coerceConcepts } from '../tools/learn.ts';
@@ -211,12 +211,8 @@ export async function handleSearch(
     const thQuery = thaiMatchQuery(query, sqlite);
     if (thQuery) extraLegs.push(keywordLeg(FTS_THAI, thQuery));
     if (extraLegs.length > 0) {
-      const byId = new Map<string, any>();
-      for (const row of [...main.rows, ...extraLegs.flatMap((l) => l.rows)]) {
-        const seen = byId.get(row.id);
-        if (!seen || row.score < seen.score) byId.set(row.id, row);
-      }
-      mergedRows = [...byId.values()].sort((a, b) => a.score - b.score).slice(0, limit * 3);
+      // RRF k=60 on rank, not raw bm25 (scales differ per table).
+      mergedRows = rrfMerge([main.rows, ...extraLegs.map((l) => l.rows)]).slice(0, limit * 3);
       // Union total without a dedupe query: max() is a true lower bound and
       // never overcounts.
       ftsTotal = Math.max(main.total, ...extraLegs.map((l) => l.total));
