@@ -165,7 +165,8 @@ export async function handleSearch(
 
   // FTS5 search must use raw SQL (Drizzle doesn't support virtual tables).
   //
-  // Two keyword tables, both queried, merged by id (see src/db/fts-tables.ts):
+  // Keyword tables queried and fused by reciprocal rank (see src/db/fts-tables.ts,
+  // fts-thai.ts; a third oracle_fts_th leg serves Thai word-split queries):
   //   oracle_fts (unicode61) — only table that serves tokens < 3 chars (PQ, jq)
   //   oracle_fts_tri (trigram) — Thai recall 26% → 100% on real logged queries.
   // This HTTP path is where real traffic flows (MCP proxies here), so the
@@ -199,9 +200,7 @@ export async function handleSearch(
     let mergedRows = main.rows;
     ftsTotal = main.total;
 
-    // Candidate legs beyond main, merged by id keeping the better (lower)
-    // raw rank. bm25 scales differ slightly across tokenizers; good enough to
-    // interleave candidates that the downstream reranker re-orders anyway.
+    // Candidate legs beyond main, fused by reciprocal rank (see rrfFuse).
     // runFtsAll/runFtsGet degrade to empty-with-a-warn, so a broken extra
     // table cannot take down the main leg — but it does log loudly.
     const extraLegs: Array<{ rows: any[]; total: number }> = [];
@@ -211,7 +210,9 @@ export async function handleSearch(
     const thQuery = thaiMatchQuery(query, sqlite);
     if (thQuery) extraLegs.push(keywordLeg(FTS_THAI, thQuery));
     if (extraLegs.length > 0) {
-      // RRF k=60 on rank, not raw bm25 (scales differ per table).
+      // RRF k=60 on rank picks and orders the candidate pool. Note: the final
+      // order is still re-sorted by combineSearchResults, which scores each row
+      // from its own leg's raw bm25 (0.7 weight) — see PR body, experiment A.
       mergedRows = rrfMerge([main.rows, ...extraLegs.map((l) => l.rows)]).slice(0, limit * 3);
       // Union total without a dedupe query: max() is a true lower bound and
       // never overcounts.

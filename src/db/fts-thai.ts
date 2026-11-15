@@ -6,7 +6,8 @@
  * question can never match it. ICU knows Thai word boundaries and ships inside
  * Bun/JS: `new Intl.Segmenter('th', { granularity: 'word' })`.
  *
- * Third keyword table `oracle_fts_th` = unicode61 over segmented text:
+ * Third keyword table `oracle_fts_th` = plain unicode61 (no stemmer, like
+ * Nat's relic5 "no stem" BM25 — tie with porter on the gauge) over segmented text:
  *   content / concepts  — Thai words separated by spaces (what gets indexed)
  *   raw                 — the original content, UNINDEXED, so search results
  *                         show the real text, never the space-split copy.
@@ -57,7 +58,7 @@ export function createThaiTable(sqlite: Database): void {
       content,
       concepts,
       raw UNINDEXED,
-      tokenize='porter unicode61'
+      tokenize='unicode61'
     )
   `);
 }
