@@ -1,3 +1,5 @@
+**Owner:** tinky — central brain (arra) of the Oraclep-World fleet; this repo is OUR fork. Work here, PRs go to Oraclep-World/arra-oracle-v3. Never push/PR to Soul-Brews-Studio (Nat's upstream). Running server = the clone at ~/ghq/github.com/Soul-Brews-Studio/arra-oracle-v3 (remote `oraclep`, branch main). Tests overwrite live ~/.oracle unless ORACLE_DATA_DIR points to a temp copy.
+
 # CLAUDE.md - Generic AI Assistant Guidelines
 
 ## Project Conventions (arra-oracle-v3)
