@@ -15,6 +15,9 @@ import type { SearchResult, SearchResponse } from './types.ts';
 import { ensureVectorStoreConnected, EMBEDDING_MODELS, getVectorStoreConfigByModel } from '../vector/factory.ts';
 import { localVectorOperations } from './vector-operations.ts';
 import { detectProject } from './project-detect.ts';
+import { FTS_THAI } from '../db/fts-thai.ts';
+import { thaiMatchQuery } from '../db/fts-thai-query.ts';
+import { dedupeBySourceFile } from '../db/search-dedupe.ts';
 import { trigramMatchQuery, ftsTokens, joinMatchQuery, pruneDeadTokens, FTS_MAIN } from '../db/fts-tables.ts';
 import type { Database } from 'bun:sqlite';
 import { coerceConcepts } from '../tools/learn.ts';
@@ -181,7 +184,7 @@ export async function handleSearch(
       const total = (runFtsGet(countStmt, [match, ...typeParams, ...projectParams]) as { total: number } | null)?.total ?? 0;
 
       const stmt = sqlite.prepare(`
-        SELECT f.id, f.content, d.type, d.source_file, d.concepts, d.project, rank as score
+        SELECT f.id, ${table === FTS_THAI ? 'f.raw' : 'f.content'} AS content, d.type, d.source_file, d.concepts, d.project, rank as score
         FROM ${table} f
         JOIN oracle_documents d ON f.id = d.id
         WHERE ${table} MATCH ? ${typeCond} AND ${projectFilter}
@@ -196,25 +199,27 @@ export async function handleSearch(
     let mergedRows = main.rows;
     ftsTotal = main.total;
 
+    // Candidate legs beyond main, merged by id keeping the better (lower)
+    // raw rank. bm25 scales differ slightly across tokenizers; good enough to
+    // interleave candidates that the downstream reranker re-orders anyway.
+    // runFtsAll/runFtsGet degrade to empty-with-a-warn, so a broken extra
+    // table cannot take down the main leg — but it does log loudly.
+    const extraLegs: Array<{ rows: any[]; total: number }> = [];
     const triQuery = trigramMatchQuery(query, sqlite);
-    if (triQuery) {
-      // runFtsAll/runFtsGet already degrade to empty-with-a-warn, so a broken
-      // trigram table cannot take down the main leg — but it does log loudly.
-      const tri = keywordLeg('oracle_fts_tri', triQuery);
-      // Merge by id keeping the better (lower) raw rank. bm25 scales differ
-      // slightly across tokenizers; good enough to interleave candidates that
-      // the downstream reranker re-orders anyway.
+    if (triQuery) extraLegs.push(keywordLeg('oracle_fts_tri', triQuery));
+    // Thai word-split leg (ICU, issue #2): null for non-Thai queries.
+    const thQuery = thaiMatchQuery(query, sqlite);
+    if (thQuery) extraLegs.push(keywordLeg(FTS_THAI, thQuery));
+    if (extraLegs.length > 0) {
       const byId = new Map<string, any>();
-      for (const row of main.rows) byId.set(row.id, row);
-      for (const row of tri.rows) {
+      for (const row of [...main.rows, ...extraLegs.flatMap((l) => l.rows)]) {
         const seen = byId.get(row.id);
         if (!seen || row.score < seen.score) byId.set(row.id, row);
       }
       mergedRows = [...byId.values()].sort((a, b) => a.score - b.score).slice(0, limit * 3);
       // Union total without a dedupe query: max() is a true lower bound and
-      // never overcounts. Exact union COUNT would couple the two tables'
-      // failure modes in one statement for a number that is informational.
-      ftsTotal = Math.max(main.total, tri.total);
+      // never overcounts.
+      ftsTotal = Math.max(main.total, ...extraLegs.map((l) => l.total));
     }
 
     ftsResults = mergedRows.map((row: any) => ({
@@ -245,7 +250,7 @@ export async function handleSearch(
     const remote = await vectorProxy.search({
       q: query,
       type,
-      limit,
+      limit: limit * 3, // over-fetch: per-document dedupe below drops sibling chunks
       offset,
       mode: 'vector',
       project: resolvedProject ?? undefined,
@@ -264,7 +269,7 @@ export async function handleSearch(
       const vector = await localVectorOperations.search({
         query,
         type,
-        limit,
+        limit: limit * 3, // over-fetch for per-document dedupe
         project: resolvedProject,
         model,
       });
@@ -280,7 +285,9 @@ export async function handleSearch(
   }
 
   // Combine results using hybrid ranking
-  const combined = combineSearchResults(ftsResults, vectorResults);
+  // One row per document (issue #2): keep the best-ranked chunk per source_file
+  // and let the list fill from the next documents.
+  const combined = dedupeBySourceFile(combineSearchResults(ftsResults, vectorResults));
   // For vector-only mode, ftsTotal is 0 and combined.length is just top-N,
   // so use the vector collection count as the total for accurate display
   let total = Math.max(ftsTotal, combined.length);

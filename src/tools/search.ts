@@ -12,6 +12,9 @@ import { ensureVectorStoreConnected } from '../vector/factory.ts';
 import { isVectorSectionEnabled } from '../vector/config.ts';
 import type { SearchResult } from '../server/types.ts';
 import type { ToolContext, ToolResponse, OracleSearchInput } from './types.ts';
+import { FTS_THAI } from '../db/fts-thai.ts';
+import { thaiMatchQuery } from '../db/fts-thai-query.ts';
+import { dedupeBySourceFile } from '../db/search-dedupe.ts';
 import { FTS_MAIN, FTS_TRI, trigramMatchQuery, ftsTokens, joinMatchQuery, pruneDeadTokens } from '../db/fts-tables.ts';
 import type { Database } from 'bun:sqlite';
 
@@ -362,7 +365,7 @@ export async function handleSearch(ctx: ToolContext, input: OracleSearchInput): 
     const runFts = (table: string, match: string): any[] => {
       const typeFilter = type === 'all' ? '' : 'AND d.type = ?';
       const stmt = ctx.sqlite.prepare(`
-        SELECT f.id, f.content, d.type, d.source_file, d.concepts, rank
+        SELECT f.id, ${table === FTS_THAI ? 'f.raw' : 'f.content'} AS content, d.type, d.source_file, d.concepts, rank
         FROM ${table} f
         JOIN oracle_documents d ON f.id = d.id
         WHERE ${table} MATCH ? ${typeFilter} ${projectFilter}
@@ -407,6 +410,24 @@ export async function handleSearch(ctx: ToolContext, input: OracleSearchInput): 
         const errorMessage = error instanceof Error ? error.message : String(error);
         warning = warning || `Trigram keyword search unavailable: ${errorMessage}. Thai recall degraded.`;
         console.error('[FTS5-tri]', errorMessage);
+      }
+    }
+
+    // Thai word-split leg (ICU, issue #2). Same failure policy as the trigram leg.
+    const thQuery = thaiMatchQuery(query, ctx.sqlite);
+    if (thQuery) {
+      try {
+        const byId = new Map<string, any>();
+        for (const row of ftsRawResults) byId.set(row.id, row);
+        for (const row of runFts(FTS_THAI, thQuery)) {
+          const seen = byId.get(row.id);
+          if (!seen || row.rank < seen.rank) byId.set(row.id, row);
+        }
+        ftsRawResults = [...byId.values()].sort((a, b) => a.rank - b.rank).slice(0, limit * 3);
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        warning = warning || `Thai word-split search unavailable: ${errorMessage}. Thai recall degraded.`;
+        console.error('[FTS5-th]', errorMessage);
       }
     }
   }
@@ -459,9 +480,10 @@ export async function handleSearch(ctx: ToolContext, input: OracleSearchInput): 
     candidates: rerankHead,
     getText: (r) => r.content,
   });
-  const finalResults = reranked.reranked
+  // One row per document: best-ranked chunk per source_file (issue #2).
+  const finalResults = dedupeBySourceFile(reranked.reranked
     ? [...reranked.results, ...rerankTail]
-    : combinedResults;
+    : combinedResults);
 
   const totalMatches = finalResults.length;
   const results: Array<Record<string, unknown>> = finalResults.slice(offset, offset + limit);
