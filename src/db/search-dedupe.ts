@@ -28,6 +28,14 @@ export function rrfMerge<T extends { id: string }>(legs: T[][], k: number = RRF_
   return [...fused.values()].sort((a, b) => b.score - a.score).map((f) => f.row);
 }
 
+/** Fused RRF score per id, divided by the best one (top row = 1). */
+export function rrfScoresNormalized(legs: Array<Array<{ id: string }>>, k: number = RRF_K): Map<string, number> {
+  const sum = new Map<string, number>();
+  for (const leg of legs) leg.forEach((row, i) => sum.set(row.id, (sum.get(row.id) ?? 0) + 1 / (k + i + 1)));
+  const max = Math.max(0, ...sum.values());
+  return new Map([...sum].map(([id, v]) => [id, max ? v / max : 0]));
+}
+
 export function dedupeBySourceFile<T extends { id: string; source_file?: string | null }>(rows: T[]): T[] {
   const seen = new Set<string>();
   const out: T[] = [];

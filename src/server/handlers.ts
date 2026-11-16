@@ -12,12 +12,13 @@ import { db, sqlite, oracleDocuments, indexingStatus, isDbLockError } from '../d
 import { REPO_ROOT, VECTOR_URL } from '../config.ts';
 import { logSearch, logDocumentAccess, logLearning } from './logging.ts';
 import type { SearchResult, SearchResponse } from './types.ts';
+import { combineSearchResults } from './hybrid-blend.ts';
 import { ensureVectorStoreConnected, EMBEDDING_MODELS, getVectorStoreConfigByModel } from '../vector/factory.ts';
 import { localVectorOperations } from './vector-operations.ts';
 import { detectProject } from './project-detect.ts';
 import { FTS_THAI } from '../db/fts-thai.ts';
 import { thaiMatchQuery } from '../db/fts-thai-query.ts';
-import { dedupeBySourceFile, rrfMerge } from '../db/search-dedupe.ts';
+import { dedupeBySourceFile, rrfMerge, rrfScoresNormalized } from '../db/search-dedupe.ts';
 import { trigramMatchQuery, ftsTokens, joinMatchQuery, pruneDeadTokens, FTS_MAIN } from '../db/fts-tables.ts';
 import type { Database } from 'bun:sqlite';
 import { coerceConcepts } from '../tools/learn.ts';
@@ -154,6 +155,7 @@ export async function handleSearch(
 
   // FTS5 search (skip only when the effective mode is vector-only)
   let ftsResults: SearchResult[] = [];
+  let ftsFused = new Map<string, number>();
   let ftsTotal = 0;
 
   // Project filter: if project specified, include project + universal (NULL)
@@ -211,14 +213,15 @@ export async function handleSearch(
     if (thQuery) extraLegs.push(keywordLeg(FTS_THAI, thQuery));
     if (extraLegs.length > 0) {
       // RRF k=60 on rank picks and orders the candidate pool. Note: the final
-      // order is still re-sorted by combineSearchResults, which scores each row
-      // from its own leg's raw bm25 (0.7 weight) — see PR body, experiment A.
+      // order is still re-sorted by combineSearchResults (hybrid-blend.ts), which
+      // feeds each fts row this fused rank score — see docs/experiments/.
       mergedRows = rrfMerge([main.rows, ...extraLegs.map((l) => l.rows)]).slice(0, limit * 3);
       // Union total without a dedupe query: max() is a true lower bound and
       // never overcounts.
       ftsTotal = Math.max(main.total, ...extraLegs.map((l) => l.total));
     }
 
+    ftsFused = rrfScoresNormalized([main.rows, ...extraLegs.map((l) => l.rows)]);
     ftsResults = mergedRows.map((row: any) => ({
       id: row.id,
       type: row.type,
@@ -284,7 +287,7 @@ export async function handleSearch(
   // Combine results using hybrid ranking
   // One row per document (issue #2): keep the best-ranked chunk per source_file
   // and let the list fill from the next documents.
-  const combined = dedupeBySourceFile(combineSearchResults(ftsResults, vectorResults));
+  const combined = dedupeBySourceFile(combineSearchResults(ftsResults, vectorResults, ftsFused));
   // For vector-only mode, ftsTotal is 0 and combined.length is just top-N,
   // so use the vector collection count as the total for accurate display
   let total = Math.max(ftsTotal, combined.length);
@@ -393,51 +396,6 @@ function normalizeRank(rank: number): number {
   // FTS5 rank is negative (more negative = better match)
   // Convert to positive 0-1 score
   return Math.min(1, Math.max(0, 1 / (1 + Math.abs(rank))));
-}
-
-/**
- * Combine FTS and vector results with rank-fusion hybrid scoring.
- *
- * Raw FTS rank and vector similarity are not calibrated to the same scale. Use
- * each leg's normalized score plus reciprocal rank, then boost overlap. This
- * keeps strong keyword-only hits visible while still letting semantic-only
- * vector hits fill gaps in natural-language recall.
- */
-function combineSearchResults(fts: SearchResult[], vector: SearchResult[]): SearchResult[] {
-  const seen = new Map<string, SearchResult>();
-
-  const addScore = (base: number | undefined, rank: number, scoreWeight: number, rankWeight: number) => {
-    const score = Math.max(0, Math.min(1, base ?? 0));
-    return score * scoreWeight + (1 / (rank + 1)) * rankWeight;
-  };
-
-  fts.forEach((r, index) => {
-    seen.set(r.id, {
-      ...r,
-      score: addScore(r.score, index, 0.7, 0.3),
-    });
-  });
-
-  vector.forEach((r, index) => {
-    const vectorScore = addScore(r.score, index, 0.65, 0.35);
-    const existing = seen.get(r.id);
-    if (existing) {
-      seen.set(r.id, {
-        ...existing,
-        score: Math.min(1, (existing.score || 0) + vectorScore + 0.12),
-        source: 'hybrid' as const,
-        distance: r.distance,
-        model: r.model,
-      });
-    } else {
-      seen.set(r.id, {
-        ...r,
-        score: vectorScore,
-      });
-    }
-  });
-
-  return Array.from(seen.values()).sort((a, b) => (b.score || 0) - (a.score || 0));
 }
 
 /**
