@@ -1,0 +1,228 @@
+diff --git a/src/db/search-dedupe.ts b/src/db/search-dedupe.ts
+index 195e09a4..aa4f34bb 100644
+--- a/src/db/search-dedupe.ts
++++ b/src/db/search-dedupe.ts
+@@ -28,6 +28,14 @@ export function rrfMerge<T extends { id: string }>(legs: T[][], k: number = RRF_
+   return [...fused.values()].sort((a, b) => b.score - a.score).map((f) => f.row);
+ }
+ 
++/** Fused RRF score per id, divided by the best one (top row = 1). */
++export function rrfScoresNormalized(legs: Array<Array<{ id: string }>>, k: number = RRF_K): Map<string, number> {
++  const sum = new Map<string, number>();
++  for (const leg of legs) leg.forEach((row, i) => sum.set(row.id, (sum.get(row.id) ?? 0) + 1 / (k + i + 1)));
++  const max = Math.max(0, ...sum.values());
++  return new Map([...sum].map(([id, v]) => [id, max ? v / max : 0]));
++}
++
+ export function dedupeBySourceFile<T extends { id: string; source_file?: string | null }>(rows: T[]): T[] {
+   const seen = new Set<string>();
+   const out: T[] = [];
+diff --git a/src/server/handlers.ts b/src/server/handlers.ts
+index 81e92b56..c7c004e9 100644
+--- a/src/server/handlers.ts
++++ b/src/server/handlers.ts
+@@ -12,12 +12,13 @@ import { db, sqlite, oracleDocuments, indexingStatus, isDbLockError } from '../d
+ import { REPO_ROOT, VECTOR_URL } from '../config.ts';
+ import { logSearch, logDocumentAccess, logLearning } from './logging.ts';
+ import type { SearchResult, SearchResponse } from './types.ts';
++import { combineSearchResults } from './hybrid-blend.ts';
+ import { ensureVectorStoreConnected, EMBEDDING_MODELS, getVectorStoreConfigByModel } from '../vector/factory.ts';
+ import { localVectorOperations } from './vector-operations.ts';
+ import { detectProject } from './project-detect.ts';
+ import { FTS_THAI } from '../db/fts-thai.ts';
+ import { thaiMatchQuery } from '../db/fts-thai-query.ts';
+-import { dedupeBySourceFile, rrfMerge } from '../db/search-dedupe.ts';
++import { dedupeBySourceFile, rrfMerge, rrfScoresNormalized } from '../db/search-dedupe.ts';
+ import { trigramMatchQuery, ftsTokens, joinMatchQuery, pruneDeadTokens, FTS_MAIN } from '../db/fts-tables.ts';
+ import type { Database } from 'bun:sqlite';
+ import { coerceConcepts } from '../tools/learn.ts';
+@@ -154,6 +155,7 @@ export async function handleSearch(
+ 
+   // FTS5 search (skip only when the effective mode is vector-only)
+   let ftsResults: SearchResult[] = [];
++  let ftsFused = new Map<string, number>();
+   let ftsTotal = 0;
+ 
+   // Project filter: if project specified, include project + universal (NULL)
+@@ -219,6 +221,7 @@ export async function handleSearch(
+       ftsTotal = Math.max(main.total, ...extraLegs.map((l) => l.total));
+     }
+ 
++    ftsFused = rrfScoresNormalized([main.rows, ...extraLegs.map((l) => l.rows)]);
+     ftsResults = mergedRows.map((row: any) => ({
+       id: row.id,
+       type: row.type,
+@@ -284,7 +287,7 @@ export async function handleSearch(
+   // Combine results using hybrid ranking
+   // One row per document (issue #2): keep the best-ranked chunk per source_file
+   // and let the list fill from the next documents.
+-  const combined = dedupeBySourceFile(combineSearchResults(ftsResults, vectorResults));
++  const combined = dedupeBySourceFile(combineSearchResults(ftsResults, vectorResults, ftsFused));
+   // For vector-only mode, ftsTotal is 0 and combined.length is just top-N,
+   // so use the vector collection count as the total for accurate display
+   let total = Math.max(ftsTotal, combined.length);
+@@ -395,51 +398,6 @@ function normalizeRank(rank: number): number {
+   return Math.min(1, Math.max(0, 1 / (1 + Math.abs(rank))));
+ }
+ 
+-/**
+- * Combine FTS and vector results with rank-fusion hybrid scoring.
+- *
+- * Raw FTS rank and vector similarity are not calibrated to the same scale. Use
+- * each leg's normalized score plus reciprocal rank, then boost overlap. This
+- * keeps strong keyword-only hits visible while still letting semantic-only
+- * vector hits fill gaps in natural-language recall.
+- */
+-function combineSearchResults(fts: SearchResult[], vector: SearchResult[]): SearchResult[] {
+-  const seen = new Map<string, SearchResult>();
+-
+-  const addScore = (base: number | undefined, rank: number, scoreWeight: number, rankWeight: number) => {
+-    const score = Math.max(0, Math.min(1, base ?? 0));
+-    return score * scoreWeight + (1 / (rank + 1)) * rankWeight;
+-  };
+-
+-  fts.forEach((r, index) => {
+-    seen.set(r.id, {
+-      ...r,
+-      score: addScore(r.score, index, 0.7, 0.3),
+-    });
+-  });
+-
+-  vector.forEach((r, index) => {
+-    const vectorScore = addScore(r.score, index, 0.65, 0.35);
+-    const existing = seen.get(r.id);
+-    if (existing) {
+-      seen.set(r.id, {
+-        ...existing,
+-        score: Math.min(1, (existing.score || 0) + vectorScore + 0.12),
+-        source: 'hybrid' as const,
+-        distance: r.distance,
+-        model: r.model,
+-      });
+-    } else {
+-      seen.set(r.id, {
+-        ...r,
+-        score: vectorScore,
+-      });
+-    }
+-  });
+-
+-  return Array.from(seen.values()).sort((a, b) => (b.score || 0) - (a.score || 0));
+-}
+-
+ /**
+  * Get random wisdom
+  */
+diff --git a/src/server/hybrid-blend.ts b/src/server/hybrid-blend.ts
+new file mode 100644
+index 00000000..b9a3d7dd
+--- /dev/null
++++ b/src/server/hybrid-blend.ts
+@@ -0,0 +1,107 @@
++/**
++ * Hybrid blend of the fts and vector legs (issue #4).
++ *
++ * `legacy` is the original formula, kept runnable (Nat: "revert but don't
++ * delete"). Switch with ARRA_HYBRID_BLEND, read per call.
++ * Empty fts or empty vector list ⇒ always legacy, so fts-only and
++ * vector-only modes keep byte-for-byte the same order.
++ */
++import type { SearchResult } from './types.ts';
++import { RRF_K } from '../db/search-dedupe.ts';
++
++export type HybridBlend = 'legacy' | 'rrf' | 'rrf-score' | 'rrf-max' | 'legacy-fused' | 'fused-top1' | 'fused-vtop1';
++
++export function hybridBlendMode(env: Record<string, string | undefined> = process.env): HybridBlend {
++  const v = env.ARRA_HYBRID_BLEND?.trim();
++  return v === 'rrf' || v === 'rrf-score' || v === 'rrf-max' || v === 'fused-top1' || v === 'fused-vtop1' || v === 'legacy-fused' ? v : 'legacy';
++}
++
++const clamp01 = (n: number | undefined) => Math.max(0, Math.min(1, n ?? 0));
++
++/** Original blend: 0.7×score+0.3×1/(rank+1) for fts, 0.65/0.35 for vector, +0.12 overlap. */
++export function combineLegacy(fts: SearchResult[], vector: SearchResult[]): SearchResult[] {
++  const seen = new Map<string, SearchResult>();
++  const addScore = (base: number | undefined, rank: number, scoreWeight: number, rankWeight: number) =>
++    clamp01(base) * scoreWeight + (1 / (rank + 1)) * rankWeight;
++
++  fts.forEach((r, index) => {
++    seen.set(r.id, { ...r, score: addScore(r.score, index, 0.7, 0.3) });
++  });
++  vector.forEach((r, index) => {
++    const vectorScore = addScore(r.score, index, 0.65, 0.35);
++    const existing = seen.get(r.id);
++    if (existing) {
++      seen.set(r.id, {
++        ...existing,
++        score: Math.min(1, (existing.score || 0) + vectorScore + 0.12),
++        source: 'hybrid' as const,
++        distance: r.distance,
++        model: r.model,
++      });
++    } else {
++      seen.set(r.id, { ...r, score: vectorScore });
++    }
++  });
++  return Array.from(seen.values()).sort((a, b) => (b.score || 0) - (a.score || 0));
++}
++
++/**
++ * Rank-based fusion (Nat's relic5): each list contributes 1/(k+rank), joined
++ * by position. `scoreWeight` > 0 multiplies by (1 + w × leg score) so distance
++ * is not thrown away (book line 94). Overlap rows sum both legs.
++ */
++function combineRrf(
++  fts: SearchResult[], vector: SearchResult[], scoreWeight: number, ftsFused: Map<string, number>,
++): SearchResult[] {
++  const acc = new Map<string, { row: SearchResult; rrf: number; s: number }>();
++  const add = (r: SearchResult, i: number, s: number, isVector: boolean) => {
++    const part = 1 / (Number(process.env.ARRA_HYBRID_K ?? RRF_K) + i + 1);
++    const cur = acc.get(r.id);
++    if (cur) {
++      cur.rrf += part;
++      cur.s = Math.max(cur.s, s);
++      if (isVector) Object.assign(cur.row, { source: 'hybrid' as const, distance: r.distance, model: r.model });
++    } else {
++      acc.set(r.id, { row: { ...r }, rrf: part, s });
++    }
++  };
++  fts.forEach((r, i) => add(r, i, ftsFused.get(r.id) ?? 0, false));
++  vector.forEach((r, i) => add(r, i, clamp01(r.score), true));
++  return [...acc.values()]
++    .map((a) => ({ ...a.row, score: a.rrf * (1 + scoreWeight * a.s) }))
++    .sort((a, b) => b.score - a.score);
++}
++
++/** Experiment: best leg position + β × the other leg's contribution. */
++function combineRrfMax(fts: SearchResult[], vector: SearchResult[], beta: number): SearchResult[] {
++  const k = Number(process.env.ARRA_HYBRID_K ?? RRF_K);
++  const acc = new Map<string, { row: SearchResult; f: number; v: number }>();
++  fts.forEach((r, i) => acc.set(r.id, { row: { ...r }, f: 1 / (k + i + 1), v: 0 }));
++  vector.forEach((r, i) => {
++    const cur = acc.get(r.id);
++    if (cur) Object.assign(cur, { v: 1 / (k + i + 1) }), Object.assign(cur.row, { source: 'hybrid' as const, distance: r.distance, model: r.model });
++    else acc.set(r.id, { row: { ...r }, f: 0, v: 1 / (k + i + 1) });
++  });
++  return [...acc.values()]
++    .map((a) => ({ ...a.row, score: Math.max(a.f, a.v) + beta * Math.min(a.f, a.v) }))
++    .sort((a, b) => b.score - a.score);
++}
++
++/** `ftsFused`: fts row id → fused (RRF over fts legs) score normalised to 0..1. */
++export function combineSearchResults(
++  fts: SearchResult[], vector: SearchResult[], ftsFused: Map<string, number> = new Map(),
++  mode: HybridBlend = hybridBlendMode(), scoreWeight = Number(process.env.ARRA_HYBRID_W ?? 1),
++): SearchResult[] {
++  if (mode === 'legacy' || fts.length === 0 || vector.length === 0) return combineLegacy(fts, vector);
++  if (mode === 'rrf-max') return combineRrfMax(fts, vector, scoreWeight);
++  if (mode === 'rrf') return combineRrf(fts, vector, 0, ftsFused);
++  if (mode === 'rrf-score') return combineRrf(fts, vector, scoreWeight, ftsFused);
++  // legacy-fused: legacy formula, fts rows fed the normalised fused score
++  const base = combineLegacy(fts.map((r) => ({ ...r, score: ftsFused.get(r.id) ?? r.score })), vector);
++  if (mode === 'legacy-fused') return base;
++  // EXPERIMENT (added after seeing 64-set results): each leg's rank-1 row is lifted to the top.
++  const top = new Set([vector[0].id, ...(mode === 'fused-top1' ? [fts[0].id] : [])]);
++  return base
++    .map((r) => (top.has(r.id) ? { ...r, score: (r.score || 0) + 1 } : r))
++    .sort((a, b) => (b.score || 0) - (a.score || 0));
++}
