@@ -1,6 +1,7 @@
 import { Elysia, t } from 'elysia';
 import { sqlite, db, oracleDocuments } from '../../db/index.ts';
 import { eq } from 'drizzle-orm';
+import { ftsUpsert } from '../../db/fts-tables.ts';
 import { docParams } from './model.ts';
 
 // Body schemas for PATCH/POST.
@@ -90,10 +91,7 @@ export const docRoute = new Elysia()
         if (typeof data.content === 'string') {
           const conceptsRow = sqlite.prepare(`SELECT concepts FROM oracle_documents WHERE id = ?`).get(params.id) as { concepts: string };
           const conceptsArr: string[] = conceptsRow ? JSON.parse(conceptsRow.concepts || '[]') : [];
-          sqlite.prepare(`DELETE FROM oracle_fts WHERE id = ?`).run(params.id);
-          sqlite
-            .prepare(`INSERT INTO oracle_fts (id, content, concepts) VALUES (?, ?, ?)`)
-            .run(params.id, data.content, conceptsArr.join(' '));
+          ftsUpsert(sqlite, params.id, data.content, conceptsArr.join(' '));
         }
 
         return { ok: true, id: params.id };
@@ -144,10 +142,7 @@ export const docRoute = new Elysia()
           createdBy: 'import-obsidian',
         }).run();
 
-        sqlite.prepare(`DELETE FROM oracle_fts WHERE id = ?`).run(id);
-        sqlite
-          .prepare(`INSERT INTO oracle_fts (id, content, concepts) VALUES (?, ?, ?)`)
-          .run(id, data.content, conceptsArr.join(' '));
+        ftsUpsert(sqlite, id, data.content, conceptsArr.join(' '));
 
         return { ok: true, id };
       } catch (e: any) {

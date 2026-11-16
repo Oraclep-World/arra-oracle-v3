@@ -41,6 +41,7 @@
  */
 import type { Database } from 'bun:sqlite';
 import { createHash } from 'crypto';
+import { FTS_THAI, createThaiTable, healThaiTable, thaiUpsert } from './fts-thai.ts';
 
 export const FTS_MAIN = 'oracle_fts';
 export const FTS_TRI = 'oracle_fts_tri';
@@ -67,6 +68,8 @@ export function initFtsTables(sqlite: Database): { healed: number; pruned: numbe
       tokenize='trigram'
     )
   `);
+  // Third table: Thai word-split copy (ICU) — see ./fts-thai.ts, issue #2.
+  createThaiTable(sqlite);
   // Fingerprints, keyed by a real PRIMARY KEY so "did this doc change?" is an
   // index lookup rather than a scan of an FTS table.
   sqlite.exec(`
@@ -122,6 +125,11 @@ export function initFtsTables(sqlite: Database): { healed: number; pruned: numbe
     DELETE FROM ${FTS_HASH}
     WHERE id NOT IN (SELECT id FROM ${FTS_MAIN})
   `).run();
+
+  const th = healThaiTable(sqlite, FTS_MAIN);
+  if (th.added > 0 || th.pruned > 0) {
+    console.error(`[fts] healed ${FTS_THAI}: +${th.added} missing, -${th.pruned} orphaned vs ${FTS_MAIN} (${Date.now() - t0}ms)`);
+  }
 
   const healed = afterHeal - triBefore;
   const pruned = afterHeal - afterPrune;
@@ -180,6 +188,7 @@ export function ftsUpsert(sqlite: Database, id: string, content: string, concept
   sqlite.prepare(`INSERT INTO ${FTS_MAIN} (id, content, concepts) VALUES (?, ?, ?)`).run(id, content, concepts);
   sqlite.prepare(`DELETE FROM ${FTS_TRI} WHERE id = ?`).run(id);
   sqlite.prepare(`INSERT INTO ${FTS_TRI} (id, content, concepts) VALUES (?, ?, ?)`).run(id, content, concepts);
+  thaiUpsert(sqlite, id, content, concepts);
   sqlite.prepare(`INSERT OR REPLACE INTO ${FTS_HASH} (id, hash) VALUES (?, ?)`)
     .run(id, contentFingerprint(content, concepts));
 }
@@ -199,6 +208,7 @@ export function ftsDeleteBatch(sqlite: Database, ids: string[]): void {
   const placeholders = ids.map(() => '?').join(',');
   sqlite.prepare(`DELETE FROM ${FTS_MAIN} WHERE id IN (${placeholders})`).run(...ids);
   sqlite.prepare(`DELETE FROM ${FTS_TRI} WHERE id IN (${placeholders})`).run(...ids);
+  sqlite.prepare(`DELETE FROM ${FTS_THAI} WHERE id IN (${placeholders})`).run(...ids);
   sqlite.prepare(`DELETE FROM ${FTS_HASH} WHERE id IN (${placeholders})`).run(...ids);
 }
 
@@ -219,6 +229,7 @@ export function ftsDeleteBatch(sqlite: Database, ids: string[]): void {
 export function ftsOptimize(sqlite: Database): void {
   sqlite.exec(`INSERT INTO ${FTS_MAIN}(${FTS_MAIN}) VALUES('optimize')`);
   sqlite.exec(`INSERT INTO ${FTS_TRI}(${FTS_TRI}) VALUES('optimize')`);
+  sqlite.exec(`INSERT INTO ${FTS_THAI}(${FTS_THAI}) VALUES('optimize')`);
 }
 
 /**
