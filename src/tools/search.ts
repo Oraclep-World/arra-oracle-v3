@@ -28,7 +28,7 @@ async function loadLogSearch(): Promise<typeof import('../server/logging.ts').lo
 
 export const searchToolDef = {
   name: 'oracle_search',
-  description: 'Search Oracle knowledge base using hybrid search (FTS5 keywords + ChromaDB vectors). Finds relevant principles, patterns, learnings, or retrospectives. Falls back to FTS5-only if ChromaDB unavailable.',
+  description: 'Search Oracle knowledge base. Default mode is fts (keywords, Thai is word-split); vector (meaning only) and hybrid (blend of both) are explicit modes. Finds relevant principles, patterns, learnings, or retrospectives. vector/hybrid fall back to FTS5-only if vectors are unavailable.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -54,9 +54,9 @@ export const searchToolDef = {
       },
       mode: {
         type: 'string',
-        enum: ['hybrid', 'fts', 'vector'],
-        description: 'Search mode: hybrid (default), fts (keywords only), vector (semantic only)',
-        default: 'hybrid'
+        enum: ['fts', 'vector', 'hybrid'],
+        description: 'Search mode: fts (default, keywords — Thai is word-split), vector (meaning only — use when your words are not the document\'s words), hybrid (blend of both)',
+        default: 'fts'
       },
       project: {
         type: 'string',
@@ -320,7 +320,7 @@ export function combineResults(
 
 export async function handleSearch(ctx: ToolContext, input: OracleSearchInput): Promise<ToolResponse> {
   const startTime = Date.now();
-  const { query, type = 'all', limit = 5, offset = 0, mode = 'hybrid', project, cwd, model } = input;
+  const { query, type = 'all', limit = 5, offset = 0, mode = 'fts', project, cwd, model } = input;
 
   if (!query || query.trim().length === 0) {
     throw new Error('Query cannot be empty');

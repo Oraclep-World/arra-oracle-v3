@@ -84,4 +84,15 @@ describe('MCP muninn_search vector section guard', () => {
     expect(body.metadata.vectorAvailable).toBe(false);
     expect(body.metadata.vectorMatches).toBe(0);
   });
+
+  test('no mode param defaults to fts: same ids as explicit fts, mode reported, vector untouched', async () => {
+    const ctx = makeCtx();
+    const dflt = parse(await handleSearch(ctx, { query: 'MCP vector disabled guard', limit: 5 }));
+    const fts = parse(await handleSearch(ctx, { query: 'MCP vector disabled guard', mode: 'fts', limit: 5 }));
+
+    expect(dflt.metadata.mode).toBe('fts');
+    expect(dflt.results.map((r: any) => r.id)).toEqual(fts.results.map((r: any) => r.id));
+    expect(dflt.results).toHaveLength(1);
+    expect(dflt.metadata.vectorAvailable).toBeUndefined();
+  });
 });
