@@ -43,6 +43,14 @@ insertDoc('thai-run-on', 'บันทึกการตรวจสอบระ
 insertDoc('short-token', 'the zq tool output was captured here', ['zq']);
 
 describe('FTS query sanitation and recall behavior', () => {
+  test('no mode argument defaults to fts: same ids/order as explicit fts, mode reported', async () => {
+    const dflt = await handleSearch('alphaonly1314 betaonly1314', 'all', 20, 0);
+    const fts = await handleSearch('alphaonly1314 betaonly1314', 'all', 20, 0, 'fts');
+    expect(dflt.mode).toBe('fts');
+    expect(dflt.results.map((r) => r.id)).toEqual(fts.results.map((r) => r.id));
+    expect(dflt.results.length).toBeGreaterThan(0);
+  });
+
   test('builds quoted OR terms instead of raw punctuation syntax', () => {
     expect(buildFtsQuery('foo.bar, baz (now)!')).toBe('"foo" OR "bar" OR "baz" OR "now"');
     expect(sanitizeFtsQuery('foo.bar, baz (now)!')).toBe('"foo" OR "bar" OR "baz" OR "now"');

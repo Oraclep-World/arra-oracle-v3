@@ -27,7 +27,7 @@ export const searchEndpoint = new Elysia().get(
     const type = query.type ?? 'all';
     const limit = Math.min(100, Math.max(1, parseInt(query.limit ?? '10')));
     const offset = Math.max(0, parseInt(query.offset ?? '0'));
-    const mode = (query.mode ?? 'hybrid') as 'hybrid' | 'fts' | 'vector';
+    const mode = (query.mode ?? 'fts') as 'hybrid' | 'fts' | 'vector';
     const project = query.project;
     const cwd = query.cwd;
     const model = query.model;
@@ -45,7 +45,7 @@ export const searchEndpoint = new Elysia().get(
     detail: {
       tags: ['search'],
       menu: { group: 'main', path: '/search', order: 10 },
-      summary: 'Hybrid search over oracle docs',
+      summary: 'Search oracle docs (default mode=fts; vector and hybrid on request)',
     },
   },
 );

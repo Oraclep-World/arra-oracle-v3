@@ -45,7 +45,7 @@ oracle-studio (separate repo)
 
 Arra now starts with a low-friction floor and lets you opt into heavier pieces only when ready:
 
-1. **Install and search immediately** — start the HTTP server and use SQLite FTS5 via `GET /api/search?mode=fts&q=...`. A fresh install works without vector indexes; hybrid/vector requests degrade to FTS until vectors are ready (#1370).
+1. **Install and search immediately** — start the HTTP server and use SQLite FTS5 via `GET /api/search?mode=fts&q=...`. A fresh install works without vector indexes; hybrid/vector requests degrade to FTS until vectors are ready (#1370). `mode` defaults to `fts` (keywords); `vector` and `hybrid` run only when asked for.
 2. **Connect MCP with a small tool surface** — add the stdio MCP server, then trim exposed tools through config (`.arra/config.json`, `ORACLE_ENABLED_TOOLS`, `ORACLE_DISABLED_TOOLS`) or the `/tools/config` page backed by `GET/PUT /api/settings/tools` (#1372/#1373).
 3. **Save deploy credentials in the browser** — `/connect` stores `ORACLE_API` plus optional `ARRA_API_TOKEN`, can generate a token for your server env, and renders `claude mcp add` / JSON snippets (#1374).
 4. **Index your ψ vault** — when a repo has `ψ/`, scan with `POST /api/indexer/scan` and populate SQLite/FTS with `POST /api/indexer/reindex` (#1375).

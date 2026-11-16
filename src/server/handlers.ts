@@ -87,7 +87,7 @@ export function cosineDistanceToSimilarity(distance: number): number {
 }
 
 /**
- * Search Oracle knowledge base with hybrid search (FTS5 + Vector)
+ * Search Oracle knowledge base. Default mode = fts (keywords); vector and hybrid (FTS5 + Vector) only when asked
  * HTTP server can safely use ChromaMcpClient since it's not an MCP server
  */
 export async function handleSearch(
@@ -95,7 +95,7 @@ export async function handleSearch(
   type: string = 'all',
   limit: number = 10,
   offset: number = 0,
-  mode: 'hybrid' | 'fts' | 'vector' = 'hybrid',
+  mode: 'hybrid' | 'fts' | 'vector' = 'fts',
   project?: string,  // If set: project + universal. If null/undefined: universal only
   cwd?: string,      // Auto-detect project from cwd if project not specified
   model?: string     // Embedding model: 'bge-m3' (default, multilingual) or 'nomic' (fast)
